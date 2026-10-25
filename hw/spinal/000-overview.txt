@@ -1023,11 +1023,16 @@ object CrossbarRoundRobinApp {
 
 ---
 
-spinalHDL에서, SpinalSim의 simulation engine은 event-driven 방식으로 동작하고, DUT에 대한 io.enable #= True 도 simulation command buffer를 통해 처리됩니까? 따라서 clock sampling 시점과 testbench의 signal assignment 사이의 delta-cycle/event ordering을 고려해야 합니끼?
+spinalHDL에서, SpinalSim의 simulation engine은 event-driven 방식으로 동작하고, 
+DUT에 대한 io.enable #= True 도 simulation command buffer를 
+통해 처리됩니까? 따라서 clock sampling 시점과 testbench의 signal assignment 
+사이의 delta-cycle/event ordering을 고려해야 합니끼?
 
 ---
 
-네, 맞습니다. SpinalSim의 시뮬레이션 엔진은 내부적으로 Verilator 등을 활용한 사이클 기반(Cycle-based) 또는 이벤트 구동(Event-driven) 방식으로 동작하며, 테스트벤치에서 수행하는 모든 신호 할당(#=)은 시뮬레이션 커맨드 버퍼(Simulation Command Buffer)를 통해 큐(Queue)에 먼저 쌓인 후 다음 시뮬레이션 델타 사이클 또는 컴포넌트 평가(Eval) 시점에 반영됩니다.
+네, 맞습니다. SpinalSim의 시뮬레이션 엔진은 내부적으로 Verilator 등을 활용한 사이클 기반(Cycle-based) 또는 
+이벤트 구동(Event-driven) 방식으로 동작하며, 테스트벤치에서 수행하는 모든 신호 할당(#=)은 시뮬레이션 커맨드 버퍼(Simulation Command Buffer)를 
+통해 큐(Queue)에 먼저 쌓인 후 다음 시뮬레이션 델타 사이클 또는 컴포넌트 평가(Eval) 시점에 반영됩니다.
 
 이로 인해 클록 샘플링 시점과 테스트벤치의 신호 할당 사이의 델타 사이클 및 이벤트 오더링(Event Ordering)을 반드시 고려해야 합니다.
 구체적인 동작 메커니즘과 주의해야 할 점은 다음과 같습니다.
@@ -1035,14 +1040,18 @@ spinalHDL에서, SpinalSim의 simulation engine은 event-driven 방식으로 동
 ### 1. 신호 할당과 커맨드 버퍼의 동작
 
 - 테스트벤치 스레드에서 io.enable #= true를 실행하면 즉시 DUT의 값이 바뀌는 것이 아닙니다.
-- 이 명령은 커맨드 버퍼에 등록되며, 현재 델타 사이클의 테스트벤치 스레드가 일시 서스펜드(suspend)되거나 simWait() / clockDomain.waitSampling() 등을 만날 때 시뮬레이션 엔진이 버퍼의 값들을 DUT 입력에 일괄 적용(Eval)합니다.
+- 이 명령은 커맨드 버퍼에 등록되며, 현재 델타 사이클의 테스트벤치 스레드가 일시 서스펜드(suspend)되거나 simWait() / clockDomain.waitSampling() 
+등을 만날 때 시뮬레이션 엔진이 버퍼의 값들을 DUT 입력에 일괄 적용(Eval)합니다.
 
 ### 2. Clock Sampling과 Delta Cycle 고려사항
 
 SpinalSim에서 가장 자주 발생하는 실수는 클록의 상승 에지(Rising Edge)와 신호 할당이 같은 시점에 일어날 때의 타이밍 오해입니다.
-- clockDomain.waitSampling()의 중요성: 테스트벤치에서 동기식 회로를 구동할 때는 simWait(10) 같은 절대 시간 지연보다 clockDomain.waitSampling() 또는 clockDomain.waitRisingEdge()를 사용하는 것이 안전합니다.
-- Sampling Window: waitSampling()은 클록 에지가 발생하고 그 에지에 의해 DUT의 내부 상태가 업데이트된 직후(델타 사이클 이후)로 테스트벤치 스레드를 제어권을 넘깁니다.
-- Next Cycle Effect: 따라서 clockDomain.waitSampling() 직후에 io.enable #= true를 하면, 이 값은 현재 클록 에지가 아닌 다음 클록 에지에 DUT의 레지스터로 샘플링됩니다. 이는 실제 하드웨어의 Setup/Hold 타임 및 RTL 시뮬레이션의 Non-blocking assignment(<=) 동작과 일치합니다.
+- clockDomain.waitSampling()의 중요성: 테스트벤치에서 동기식 회로를 구동할 때는 simWait(10) 같은 절대 시간 지연보다 clockDomain.waitSampling() 
+또는 clockDomain.waitRisingEdge()를 사용하는 것이 안전합니다.
+- Sampling Window: waitSampling()은 클록 에지가 발생하고 그 에지에 의해 DUT의 내부 상태가 업데이트된 
+직후(델타 사이클 이후)로 테스트벤치 스레드를 제어권을 넘깁니다.
+- Next Cycle Effect: 따라서 clockDomain.waitSampling() 직후에 io.enable #= true를 하면, 이 값은 현재 클록 에지가 아닌 
+다음 클록 에지에 DUT의 레지스터로 샘플링됩니다. 이는 실제 하드웨어의 Setup/Hold 타임 및 RTL 시뮬레이션의 Non-blocking assignment(<=) 동작과 일치합니다.
 
 ### 요약 및 권장 스크립트 패턴
 
@@ -1059,20 +1068,25 @@ io.payload #= 42
 clockDomain.waitSampling() 
 ```
 
-SpinalSim은 내부적으로 fork 스레드 간의 실행 순서나 sleep 호출 시점에 따라 동일 시간 내에서도 델타 사이클 순서가 뒤틀릴 수 있으므로, 항상 Clock Domain API에서 제공하는 샘플링 동기화 함수들을 축으로 테스트벤치를 작성해야 레이스 컨디션(Race Condition)을 방지할 수 있습니다.
+SpinalSim은 내부적으로 fork 스레드 간의 실행 순서나 sleep 호출 시점에 따라 동일 시간 내에서도 델타 사이클 순서가 뒤틀릴 수 있으므로, 
+항상 Clock Domain API에서 제공하는 샘플링 동기화 함수들을 축으로 테스트벤치를 작성해야 레이스 컨디션(Race Condition)을 방지할 수 있습니다.
 
-추가적으로 SpinalSim에서 다중 스레드(fork) 간의 신호 충돌이나, Verilator 백엔드 스케줄링과 관련된 구체적인 디버깅 방법 또는 특정 타이밍 시나리오에 대해 더 알고 싶으신 부분이 있다면 편하게 말씀해 주세요!
+추가적으로 SpinalSim에서 다중 스레드(fork) 간의 신호 충돌이나, Verilator 백엔드 스케줄링과 관련된 구체적인 디버깅 방법 또는 
+특정 타이밍 시나리오에 대해 더 알고 싶으신 부분이 있다면 편하게 말씀해 주세요!
 
 ---
 
 ## Verilator 백엔드 스케줄링과 관련된 구체적인 디버깅 방법
 
-SpinalSim의 백엔드로 Verilator를 사용할 때 발생하는 타이밍 이슈나 델타 사이클 레이스 컨디션은 일반적인 소프트웨어 디버거(JDB, IntelliJ Debugger)만으로는 원인을 찾기 어렵습니다. SpinalHDL의 Scala 스레드 스케줄러와 Verilator의 C++ 런타임 평가(Eval) 루프가 결합되어 동작하기 때문입니다.
+SpinalSim의 백엔드로 Verilator를 사용할 때 발생하는 타이밍 이슈나 델타 사이클 레이스 컨디션은 일반적인 소프트웨어 
+디버거(JDB, IntelliJ Debugger)만으로는 원인을 찾기 어렵습니다. SpinalHDL의 Scala 스레드 스케줄러와 Verilator의 C++ 런타임 평가(Eval) 
+루프가 결합되어 동작하기 때문입니다.
 Verilator 백엔드 스케줄링 문제를 격리하고 추적하기 위한 구체적인 디버깅 방법 4가지를 정리해 드립니다.
 
 ### 1. simSuccess / simFailure 메커니즘과 VCD 파형 분석 (기본)
 
-가장 확실한 방법은 SpinalSim이 생성하는 VCD(Value Change Dump) 파일에서 테스트벤치의 드라이빙 시점과 RTL 레지스터의 샘플링 시점을 나노초(ns) 단위 및 델타 사이클 단위로 시각화하는 것입니다.
+가장 확실한 방법은 SpinalSim이 생성하는 VCD(Value Change Dump) 파일에서 테스트벤치의 드라이빙 시점과 RTL 레지스터의 
+샘플링 시점을 나노초(ns) 단위 및 델타 사이클 단위로 시각화하는 것입니다.
 - 디버깅 팁: 파형만 보고는 테스트벤치 스레드의 어느 라인에서 신호가 들어갔는지 알기 어렵기 때문에, DUT에 디버그용 모니터링 신호(Probe)를 심어두면 좋습니다.
 ```scala
 // SpinalSim 컴파일 플래그 설정
@@ -1091,13 +1105,18 @@ SimConfig
 ### 2. SpinalSim 커맨드 버퍼 강제 플러시 (simDomain.simEval())
 
 테스트벤치 코드에서 #=로 값을 넣었을 때, Verilator가 이 값을 언제 평가(Eval)하는지 순서가 꼬이는 경우가 있습니다.
-- 문제 상황: fork 스레드 A에서 신호를 인가하고, 거의 동시에 fork 스레드 B에서 그 신호를 읽으려고 할 때, Verilator C++ 모델이 재평가되지 않아 스레드 B가 옛날 값을 읽는 현상.
-- 해결 및 디버깅: 의도적으로 Verilator 엔진을 한 번 구동시켜 커맨드 버퍼를 반영하고 컴포넌트를 강제 업데이트하려면 DelayedChannels 플러시 또는 SimManager 제어가 필요하지만, 일반적으로는 sleep(0) 이나 simWait()을 호출하여 스레드 제어권을 시뮬레이터에 넘겨 델타 사이클을 진행시킵니다.
-- 만약 특정 스레드가 우선순위를 가져야 한다면 fork 순서를 명확히 하거나, Reg가 아닌 Wire 조합 회로의 경우 조합 회로 전파(Combinational Propagation)를 위해 스레드 간 동기화 함수(clockDomain.waitSampling())를 명확히 경계선으로 두어야 합니다.
+- 문제 상황: fork 스레드 A에서 신호를 인가하고, 거의 동시에 fork 스레드 B에서 그 신호를 읽으려고 할 때, 
+Verilator C++ 모델이 재평가되지 않아 스레드 B가 옛날 값을 읽는 현상.
+- 해결 및 디버깅: 의도적으로 Verilator 엔진을 한 번 구동시켜 커맨드 버퍼를 반영하고 컴포넌트를 강제 업데이트하려면 
+DelayedChannels 플러시 또는 SimManager 제어가 필요하지만, 일반적으로는 sleep(0) 이나 simWait()을 호출하여 
+스레드 제어권을 시뮬레이터에 넘겨 델타 사이클을 진행시킵니다.
+- 만약 특정 스레드가 우선순위를 가져야 한다면 fork 순서를 명확히 하거나, Reg가 아닌 Wire 조합 회로의 경우 
+조합 회로 전파(Combinational Propagation)를 위해 스레드 간 동기화 함수(clockDomain.waitSampling())를 명확히 경계선으로 두어야 합니다.
 
 ### 3. Verilator 내부 eval() 호출 로그 추적 (C++ 레벨)
 
-SpinalHDL이 Verilator를 띄울 때 내부적으로 생성하는 C++ 래퍼(Wrapper) 소스코드가 있습니다. 컴파일 시 생성되는 simWorkspace/ 디렉토리를 확인하면 문제의 실마리를 찾을 수 있습니다.
+SpinalHDL이 Verilator를 띄울 때 내부적으로 생성하는 C++ 래퍼(Wrapper) 소스코드가 있습니다. 컴파일 시 
+생성되는 simWorkspace/ 디렉토리를 확인하면 문제의 실마리를 찾을 수 있습니다.
 - 디버깅 경로: simWorkspace/[ProjectName]/ 폴더로 이동합니다.
 - 확인할 파일: Verilator가 생성한 V[TopLevel]___024root__DepSet_...cpp 또는 내부 eval 루프 관련 소스.
 - Verilator 컴파일러 플래그 추가: SpinalSim 설정 시 Verilator에 직접 디버그 플래그를 주입할 수 있습니다.
@@ -1108,28 +1127,36 @@ SimConfig
   .addSimulatorFlag("-Wwarn-style") // 스타일 및 타이밍 위험 경고 활성화
   .compile(new MyTopLevel)
 ```
-- 특히 --trace-dups나 --report-unoptflat 플래그는 Verilator가 내부적으로 조합회로 루프(Combinational Loop)나 정적 스케줄링 시 성능을 떨어뜨리는(혹은 타이밍을 꼬이게 만드는) 요소를 리포트해주므로 레이스 컨디션 디버깅에 매우 유용합니다.
+- 특히 --trace-dups나 --report-unoptflat 플래그는 Verilator가 내부적으로 조합회로 루프(Combinational Loop)나 
+정적 스케줄링 시 성능을 떨어뜨리는(혹은 타이밍을 꼬이게 만드는) 요소를 리포트해주므로 레이스 컨디션 디버깅에 매우 유용합니다.
 
 ### 4. Scala/Java 스레드 덤프를 통한 락(Lock) 및 스케줄링 데드락 분석
 
-SpinalSim은 내부적으로 SimManager가 여러 fork 스레드를 Green Thread(코루틴 형태) 방식으로 스케줄링합니다. 만약 시뮬레이션이 특정 타임스탬프에서 멈춰서 다음 클록으로 진행하지 않는다면(Deadlock), 이는 델타 사이클 내에서 스레드 간의 의존성이 꼬인 것입니다.
+SpinalSim은 내부적으로 SimManager가 여러 fork 스레드를 Green Thread(코루틴 형태) 방식으로 스케줄링합니다. 
+만약 시뮬레이션이 특정 타임스탬프에서 멈춰서 다음 클록으로 진행하지 않는다면(Deadlock), 이는 델타 사이클 내에서 스레드 간의 의존성이 꼬인 것입니다.
 - 현상: 시뮬레이션 시간이 더 이상 가지 않고 CPU 점유율만 높거나 아예 멈춤.
 - 디버깅 방법: IntelliJ에서 시뮬레이션을 실행 중인 경우, 멈춘 순간 "Pause Program" 버튼을 누르거나 jstack 명령어로 스레드 덤프를 뜹니다.
-- 확인 지점: 스레드 스택에서 spinal.core.sim.SimManager 또는 SimThread가 어떤 조건(wait, sleep)에서 블로킹되어 있는지 확인합니다. 보통 한스레드가 while(!dut.io.valid.toBoolean) { simWait(0) } 같은 형태의 바쁜 대기(Busy Wait)를 수행하면서 델타 사이클을 독점하고, Verilator의 클록 에지는 진행되지 못하게 막고 있는 경우가 많습니다. (이 경우 clockDomain.waitSampling()으로 변경해야 합니다.)
+- 확인 지점: 스레드 스택에서 spinal.core.sim.SimManager 또는 SimThread가 어떤 조건(wait, sleep)에서 블로킹되어 있는지 확인합니다. 
+보통 한스레드가 while(!dut.io.valid.toBoolean) { simWait(0) } 같은 형태의 바쁜 대기(Busy Wait)를 수행하면서 델타 사이클을 독점하고,
+Verilator의 클록 에지는 진행되지 못하게 막고 있는 경우가 많습니다. (이 경우 clockDomain.waitSampling()으로 변경해야 합니다.)
 
 ---
 
 ## SpinalSim에서 다중 스레드(fork) 간의 신호 충돌과 관련된 구체적인 디버깅 방법
 
-SpinalSim에서 여러 fork 스레드가 동일한 DUT 신호를 동시에 드라이브하거나, 한 스레드가 값을 쓰는 타이밍에 다른 스레드가 가독(Read)을 시도할 때 시뮬레이션 레이스 컨디션(Race Condition)이 발생합니다. SpinalSim은 내부적으로 자체 스레드 매니저를 통해 협력적 멀티태스킹(Cooperative Multitasking)을 수행하므로, 스레드 간의 델타 사이클 실행 순서가 뒤틀리면 디버깅하기 까다로운 버그가 생깁니다.
+SpinalSim에서 여러 fork 스레드가 동일한 DUT 신호를 동시에 드라이브하거나, 한 스레드가 값을 쓰는 타이밍에 다른 스레드가 가독(Read)을 
+시도할 때 시뮬레이션 레이스 컨디션(Race Condition)이 발생합니다. SpinalSim은 내부적으로 자체 스레드 매니저를 통해 협력적 
+멀티태스킹(Cooperative Multitasking)을 수행하므로, 스레드 간의 델타 사이클 실행 순서가 뒤틀리면 디버깅하기 까다로운 버그가 생깁니다.
 다중 스레드 간의 신호 충돌을 격리하고 디버깅하기 위한 구체적인 접근법과 기법 4가지를 소개합니다.
 
 ### 1. SpinalSim의 내부 Write-Collision 감지 활용하기
 
-SpinalSim은 다행히 동일한 델타 사이클 내에서 서로 다른 스레드가 같은 신호에 #= 할당을 시도하는 쓰기 충돌(Write Collision)을 감지하면 내부적으로 예외를 발생시킵니다.
+SpinalSim은 다행히 동일한 델타 사이클 내에서 서로 다른 스레드가 같은 신호에 #= 할당을 시도하는 쓰기 충돌(Write Collision)을 
+감지하면 내부적으로 예외를 발생시킵니다.
 - 예외 메시지 예시: SpinalSim error : ... write collision ...
 - 디버깅 방법: 이 에러가 발생하면 스택 트레이스(Stack Trace)를 따라가 충돌이 난 두 fork 블록을 확인합니다.
-- 원인 및 방지: 보통 마스터 스레드와 버스 스레드가 동시에 valid나 ready 신호를 조작할 때 발생합니다. 각 신호의 제어 권한(Ownership)을 단 하나의 스레드에만 부여하도록 테스트벤치 구조를 리팩토링해야 합니다.
+- 원인 및 방지: 보통 마스터 스레드와 버스 스레드가 동시에 valid나 ready 신호를 조작할 때 발생합니다. 
+각 신호의 제어 권한(Ownership)을 단 하나의 스레드에만 부여하도록 테스트벤치 구조를 리팩토링해야 합니다.
 
 ### 2. Monitor 스레드 분리와 Sensitive API 활용
 
@@ -1158,9 +1185,11 @@ fork {
 
 ### 3. simWait(0)을 이용한 델타 사이클 강제 양보 (Yield)
 
-동일한 타임스탬프(동일한 Clock Edge 직후) 내에서 스레드 A가 설정한 값을 스레드 B가 즉시 참조해야 하는 조합 회로(Combinational Layer) 디버깅 시, 스레드 실행 순서에 따라 값이 다르게 보일 수 있습니다.
+동일한 타임스탬프(동일한 Clock Edge 직후) 내에서 스레드 A가 설정한 값을 스레드 B가 즉시 참조해야 하는 조합 회로(Combinational Layer) 디버깅 시, 
+스레드 실행 순서에 따라 값이 다르게 보일 수 있습니다.
 - 현상: 스레드 A에서 io.in #= 1을 했는데, 같은 시점에 실행된 스레드 B의 if(io.out.toBoolean) 문이 실행되지 않음.
-- 디버깅 및 해결: 스레드 B에 simWait(0)을 주입하여 현재 델타 사이클의 실행 제어권을 다른 스레드와 시뮬레이터 엔진에 양보(Yield)합니다. Verilator가 커맨드 버퍼의 값을 반영하고 조합 회로를 다시 계산(eval)할 시간을 준 후 다음 델타 사이클에서 값을 읽도록 유도하는 방식입니다.
+- 디버깅 및 해결: 스레드 B에 simWait(0)을 주입하여 현재 델타 사이클의 실행 제어권을 다른 스레드와 시뮬레이터 엔진에 양보(Yield)합니다. 
+Verilator가 커맨드 버퍼의 값을 반영하고 조합 회로를 다시 계산(eval)할 시간을 준 후 다음 델타 사이클에서 값을 읽도록 유도하는 방식입니다.
 
 ### 4. 시뮬레이션 타임 브레이크포인트와 변수 스냅샷
 
@@ -1174,6 +1203,8 @@ if (simTime() >= 550) {
 }
 ```
 
-- 이 지점에서 IntelliJ의 "Parallel Stacks" 또는 "Threads" 뷰를 열면, 현재 대기 중인(Suspended) fork 스레드들이 각각 어떤 waitSampling이나 waitUntil 조건에 걸려 레이스 컨디션에 빠졌는지 한눈에 파악할 수 있습니다.
+- 이 지점에서 IntelliJ의 "Parallel Stacks" 또는 "Threads" 뷰를 열면, 현재 대기 중인(Suspended) fork 스레드들이 각각 
+어떤 waitSampling이나 waitUntil 조건에 걸려 레이스 컨디션에 빠졌는지 한눈에 파악할 수 있습니다.
 
-혹시 다중 스레드 간에 1) 서로 같은 신호에 값을 써서 시뮬레이션이 에러로 죽는 상황인가요, 아니면 2) 한쪽에서 쓴 신호를 다른 스레드가 같은 시점에 읽지 못하고 누락(Miss)하는 타이밍 문제인가요? 구체적인 충돌 양상을 알려주시면 더 정확한 동기화 패턴(SimMutex, StreamReady 핸들링 등)을 제안해 드리겠습니다.
+혹시 다중 스레드 간에 1) 서로 같은 신호에 값을 써서 시뮬레이션이 에러로 죽는 상황인가요, 아니면 2) 한쪽에서 쓴 신호를 다른 스레드가 같은 시점에 
+읽지 못하고 누락(Miss)하는 타이밍 문제인가요? 구체적인 충돌 양상을 알려주시면 더 정확한 동기화 패턴(SimMutex, StreamReady 핸들링 등)을 제안해 드리겠습니다.
