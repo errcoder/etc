@@ -34,7 +34,7 @@ git push -u origin main
 # 기존에 등록된 원격 저장소 주소에 토큰을 심어서 업데이트합니다.
 git remote set-url origin https://<내_깃허브_아이디>:<발급받은_토큰>@github.com/<유저이름>/<저장소이름>.git
 ```
-• 예시: 아이디가 errcoder, 토큰이 ghp_ABC123, 저장소가 my-project라면:
+• 예시: 아이디가 errcoder, 토큰이 ghp_ABC123, 저장소가 etc라면:
 ```
 git remote set-url origin https://errcoder:ghp_ABC123@github.com/errcoder/etc.git
 ```
