@@ -2819,4 +2819,76 @@ CPU
 2. **Test-2: Full-duplex + random backpressure**
 3. **Test-3: 의도적인 FIFO overflow**
 
-세 개를 독립 테스트로 만들고, 각 테스트의 **expected behavior까지 명확하게 정의한 뒤** 드리는 것이 맞습니다. 이렇게 해야 사용자가 로컬에서 실행했을 때 로그 하나하나를 가지고 바로 RTL 학습을 진행할 수 있습니다.
+세 개를 독립 테스트로 만들고, 각 테스트의 **expected behavior까지 명확하게 정의한 뒤** 드리는 것이 맞습니다. 
+이렇게 해야 사용자가 로컬에서 실행했을 때 로그 하나하나를 가지고 바로 RTL 학습을 진행할 수 있습니다.
+
+---
+
+---
+
+좋습니다. 👍
+
+그럼 다음 단계는 **이전 코드를 그대로 이어 붙이지 않고**, SpinalHDL **1.15.0 기준으로 전체 구조와 시뮬레이션을 다시 정리해서** 진행하겠습니다.
+
+### 진행 순서
+
+1. **UART + FIFO + Pipeline 통합 구조 확정**
+   ```text
+   A TX
+      │
+      ▼
+   ┌────────┐
+   │ UART TX│
+   └────┬───┘
+        │ serial
+        ▼
+   ┌────────┐
+   │ UART RX│
+   └────┬───┘
+        │ Flow
+        ▼
+   Flow.toStream()
+        │
+        ▼
+   StreamFifo
+        │
+        ▼
+   Pipeline
+        │
+        ▼
+      A RX
+   ```
+
+   동시에 반대 방향도 똑같이 동작시켜서 **Full Duplex**를 구성합니다.
+
+2. **SpinalHDL 제공 컴포넌트 적극 사용**
+   - `Stream`
+   - `Flow`
+   - `StreamFifo`
+   - `.stage()`
+   - `StreamDriver`
+   - `StreamMonitor`
+   - `StreamReadyRandomizer`
+   - `ScoreboardInOrder`
+
+3. **테스트를 세 단계로 분리**
+   - **Test 1:** Full Duplex + Backpressure 없음
+   - **Test 2:** Full Duplex + Random Backpressure
+   - **Test 3:** 의도적인 FIFO Overflow 실험
+
+4. 특히 시뮬레이션은
+   - `waitSampling()` / `waitFallingEdge()` 문제
+   - Stream `valid/ready/fire`
+   - UART TX의 `busy`
+   - RX의 `valid` 1-cycle pulse
+   - `Flow → Stream` 변환
+   - FIFO가 가득 찼을 때 데이터 손실
+   - scoreboard가 실제 handshake를 기준으로 데이터를 추적하는지
+
+   를 하나씩 검증하겠습니다.
+
+5. **PASS라고 미리 가정하지 않겠습니다.**
+   
+   먼저 코드를 완성한 뒤 실제로 컴파일/시뮬레이션을 돌려보고, 문제가 나오면 그 로그를 기준으로 수정하는 방식으로 진행하겠습니다.
+
+다음 답변에서는 바로 **프로젝트 디렉터리 구조 → 각 Scala 파일 전체 코드 → 시뮬레이션 코드 → 실행 명령 → 각 테스트에서 기대하는 로그** 순서로 정리해서 시작하겠습니다.
