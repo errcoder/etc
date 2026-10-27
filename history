@@ -1,0 +1,263 @@
+    1  ls ../peter/z/
+    2  sudo su
+    3  ls ../peter/z/
+    4  sudo su
+    5  ls
+    6  ls -a
+    7  which chrome
+    8  vi .bashrc
+    9  ls -a
+   10  cd 
+   11  ls -a
+   12  ls -a .local
+   13  ls -a .local/share
+   14  ls -a .local/bin
+   15  history
+   16  echo $PATH
+   17  cd
+   18  ll -a ../peter/.local
+   19  ll -a ../peter
+   20  cd ..
+   21  ll
+   22  ll -a ../peter/.local
+   23  ll -a ../peter
+   24  cd 
+   25  ll -a ../peter/.local
+   26  ll -a ../peter/.local/bin
+   27  ll -a ../peter/.local/sbt/bin
+   28  pwd
+   29  ls -a
+   30  cd demo
+   31  ls
+   32  curl -fL https://github.com/coursier/coursier/releases/latest/download/cs-x86_64-pc-linux.gz | gzip -d > cs && chmod +x cs && ./cs setup
+   33  sbt --version
+   34  history
+   35  ll
+   36  sudo su
+   37  ls ../peter/z
+   38  sudo ls ../peter/z
+   39  sudo ls -aF ../peter/z
+   40  sudo ls -aF ../peter/z/t
+   41  sudo ls -aF ../peter/z/a
+   42  sudo ls -aF ../peter/z/d
+   43  sudo apt update
+   44  ls
+   45  ls -a
+   46  cd Downloads/
+   47  ls
+   48  sudo wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+   49  ll
+   50  sudo apt install ./google-chrome-stable_current_amd64.deb
+   51  ls
+   52  ll
+   53  rm *deb
+   54  ll
+   55  ls -a
+   56  ll
+   57  wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+   58  ll
+   59  sudo apt install ./google-chrome-stable_current_amd64.deb
+   60  ls
+   61  rm *
+   62  ll
+   63  ls -al
+   64  which chrome
+   65  cd
+   66  ls
+   67  mkdir work
+   68  ls
+   69  cd work
+   70  ls
+   71  cd 
+   72  mkdir demo
+   73  ls
+   74  cd demo
+   75  mkdir spinal
+   76  ls
+   77  pwd
+   78  cd spinal/
+   79  ls
+   80  pwd
+   81  code .
+   82  which java
+   83  java --version
+   84  which sbt
+   85  sudo su peter
+   86  sbt --version
+   87  . .profile
+   88  ls -a
+   89  cd ..
+   90  ls -a
+   91  . .profile
+   92  sbt --version
+   93  which sbt
+   94  which scala
+   95  which cs
+   96  which scalac
+   97  which coursier
+   98  which scala-fmt
+   99  which scalafmt
+  100  cd demo
+  101  ㅊㅇ
+  102  cd
+  103  ls
+  104  mv demo hw
+  105  ls
+  106  cd hw
+  107  mkdir spinal
+  108  ls
+  109  ll
+  110  more cs
+  111  file cs
+  112  which cs
+  113  cs --version
+  114  cs list
+  115  ./cs
+  116  ./cs --version
+  117  which cs
+  118  pwd
+  119  ls `which cs`/..
+  120  ll
+  121  ll /home/rosa/.local/share/coursier/bin/
+  122  pwd
+  123  history
+  124  ls
+  125  rm cs
+  126  ls
+  127  ls -a ..
+  128  ls
+  129  cd spinal/
+  130  git clone --depth 1 https://github.com/SpinalHDL/SpinalTemplateSbt.git my
+  131  ls
+  132  rm README.md 
+  133  ls
+  134  cd my
+  135  ls
+  136  ls -a
+  137  rm -rf .git
+  138  git init
+  139  ls -a
+  140  rm build.sc
+  141  rm .mill-version 
+  142  ls
+  143  ls -a
+  144  vi build.sbt 
+  145  ls
+  146  ls -a
+  147  cd
+  148  ls
+  149  mv hw demo
+  150  ls
+  151  ls work
+  152  cd demo
+  153  ls
+  154  depo
+  155  ls
+  156  cd ..
+  157  ls
+  158  mv demo depo
+  159  ls
+  160  cd deop
+  161  ls
+  162  cd depo
+  163  ls
+  164  cd spinal/
+  165  ls
+  166  cd my
+  167  ls -a
+  168  ㅣㄴ
+  169  ls
+  170  cd ..
+  171  ls
+  172  mv my template
+  173  ls
+  174  cd template/
+  175  ls
+  176  code .
+  177  which verilator
+  178  ls -a
+  179  cd
+  180  ls -a
+  181  ls -a ../peter
+  182  cp ../peter/.gitconfig .
+  183  vi .gitconfig
+  184  ls
+  185  cd Documents/
+  186  ls
+  187  mkdir etc
+  188  ls
+  189  rmdir etc
+  190  ls
+  191  git clone https://github.com/errcoder.git
+  192  git clone https://github.com/errcoder/errcoder.git
+  193  ls
+  194  cd errcoder/
+  195  ls
+  196  rm README.md 
+  197  ls -a
+  198  rm -rf .git
+  199  ls
+  200  ls econ/companies/
+  201  ls
+  202  echo "# etc" >> README.md
+  203  git init
+  204  git add README.md
+  205  git commit -m "first commit"
+  206  git branch -M main
+  207  git remote add origin https://github.com/errcoder/etc.git
+  208  git log
+  209  git push -u origin main
+  210  git remote set-url origin https://errcoder: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@github.com/errcoder/etc.git
+  211  git push -u origin main
+  212  git log
+  213  ls
+  214  ls -a
+  215  git add .
+  216  git commit -m "hi"
+  217  git push -u origin main
+  218  git log
+  219  git add .
+  220  git commit -m hello
+  221  git push -u origin main
+  222  git add .
+  223  git commit -m hello2
+  224  git push -u origin main
+  225  git add .
+  226  git commit -m hello
+  227  git push -u origin main
+  228  git add .
+  229  git commit -m hello
+  230  git push -u origin main
+  231  git add .
+  232  git commit -m hello
+  233  git push -u origin main
+  234  git add .
+  235  git commit -m hello
+  236  git push -u origin main
+  237  git add .
+  238  git commit -m hello
+  239  git push -u origin main
+  240  which chrome
+  241  cd
+  242  vi .bashrc
+  243  chrome
+  244  google-chrome
+  245  which google-chrome
+  246  cd Documents/
+  247  cd errcoder/
+  248  ls
+  249  git add .
+  250  git commit -m hello
+  251  git push -u origin main
+  252  git add .
+  253  git commit -m hello
+  254  git push -u origin main
+  255  lls /tmp
+  256  ll /tmp
+  257  rm -rf /tmp/foo
+  258  ll /tmp
+  259  git add .
+  260  git commit -m hello
+  261  git push -u origin main
+  262  ls
+  263  history > history
