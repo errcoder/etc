@@ -934,13 +934,14 @@ readData
 
 ---
 
+```
 [info] [Progress] Start SimpleRam test simulation with seed 1668218169
 [info] address=0 readData=0xAA
 [info] address=1 readData=0xBB
 [info] address=2 readData=0xCC
 [info] address=3 readData=0xDD
 [info] [Done] Simulation done in 19.718 ms
-
+```
 Sync Read RAM 은 중요한 부분이니 시뮬레이션 코드까지 진행하고, 그 후에
 Async Read RAM vs Sync Read RAM**을 아주 짧게 정리하자.
 
