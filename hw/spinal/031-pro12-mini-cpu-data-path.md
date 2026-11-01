@@ -566,3 +566,110 @@ rd
 ```
 
 처럼 **명령어 하나가 실제로 Register → ALU → Register 흐름을 만드는 Mini CPU**로 연결하겠습니다.
+
+---
+
+맞습니다. **이번 실패는 DUT 문제가 아니라 제가 작성한 테스트 벡터의 `rd` 기대값을 잘못 계산한 것입니다.**  
+이건 제가 미리 비트 필드를 직접 검산했어야 했습니다.
+
+실제 출력:
+
+```text
+instruction=0x2B00 opcode=2 rd=2 rs1=3 valid=true
+```
+
+이 값이 **정상입니다.**
+
+### 왜 `rd=2`인가?
+
+명령어:
+
+```text
+0x2B00
+```
+
+을 16비트로 보면:
+
+```text
+0010 1011 0000 0000
+^^^^ ^^^^
+15:12 11:8
+```
+
+필드를 나누면:
+
+```text
+[15:12] = 0010 = opcode field
+[11:10] = 10   = rd = 2
+[9:8]   = 11   = rs1 = 3
+```
+
+따라서:
+
+```text
+opcode = 2
+rd     = 2
+rs1    = 3
+```
+
+입니다.
+
+제가 테스트 코드에서:
+
+```scala
+expectedRd = 0
+```
+
+이라고 잘못 넣었습니다.
+
+---
+
+## 테스트 코드 수정
+
+세 번째 테스트만:
+
+```scala
+test(
+  instruction = 0x2B00,
+  expectedOpcode = 2,
+  expectedRd = 2,       // 수정
+  expectedRs1 = 3
+)
+```
+
+로 바꾸면 됩니다.
+
+그리고 네 번째 `0x3C00`은:
+
+```text
+0011 1100 0000 0000
+     ^^ ^^
+     rd rs1
+```
+
+이므로:
+
+```text
+opcode = 3
+rd     = 3
+rs1    = 0
+```
+
+으로 현재 테스트가 맞습니다.
+
+### 따라서 예상 결과
+
+```text
+instruction=0x0600 opcode=0 rd=1 rs1=2 valid=true
+instruction=0x1900 opcode=1 rd=2 rs1=1 valid=true
+instruction=0x2B00 opcode=2 rd=2 rs1=3 valid=true
+instruction=0x3C00 opcode=3 rd=3 rs1=0 valid=true
+Instruction Decoder test passed.
+```
+
+**Decoder 자체는 수정할 필요 없습니다.**
+
+이번에는 특히 `0x2B00`의 비트 필드를 제가 잘못 계산한 것이므로, 다음 단계부터는 **명령어 인코딩과 expected 값도 함께 검산해서** 진행하겠습니다.
+
+---
+
