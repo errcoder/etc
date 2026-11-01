@@ -854,3 +854,133 @@ Fetch → Decode → Execute → Write Back
 
 을 실제 여러 stage로 분리하게 됩니다.
 
+---
+
+좋습니다. **Project 12 — Mini CPU 기본 구조까지 정상적으로 완료했습니다.** ✅
+
+이번 테스트에서 실제로 검증된 것은:
+
+```text
+LOAD
+ ↓
+Register File 초기화
+ ↓
+PC
+ ↓
+Instruction ROM
+ ↓
+Decoder
+ ↓
+Register File Read
+ ↓
+ALU
+ ↓
+Write Back
+```
+
+그리고 실제 실행 결과:
+
+```text
+ADD R2, R0, R1  → R2 = 0x30
+SUB R1, R1, R0  → R1 = 0x10
+AND R3, R1, R1  → R3 = 0x10
+OR  R2, R2, R0  → R2 = 0x30
+```
+
+까지 확인했습니다.
+
+특히 이번에는 **write-back을 실제 clock edge에서 검증**했기 때문에 단순히 `result` 출력만 맞는 것보다 의미가 큽니다.
+
+---
+
+# Project 12 완료
+
+지금까지 배운 CPU 구성요소를 정리하면:
+
+```text
+Project 12
+├─ Bus / Address Decode
+├─ Register File
+├─ Dual Read Register File
+├─ ALU
+├─ Instruction Format
+├─ Instruction Decoder
+├─ Instruction Execution
+├─ Program Counter
+├─ Instruction ROM
+├─ Fetch Unit
+└─ Mini CPU
+     └─ Fetch → Decode → Execute → Write Back
+```
+
+여기까지가 **비파이프라인(single-cycle 형태의 간단한 CPU datapath)**입니다.
+
+---
+
+# 다음: Project 13 — Pipeline
+
+이제 드디어 처음에 미뤄두었던 **Pipeline / Stage**로 넘어갑니다.
+
+현재 CPU는 개념적으로:
+
+```text
+한 instruction
+    │
+    ▼
+Fetch
+    │
+    ▼
+Decode
+    │
+    ▼
+Execute
+    │
+    ▼
+Write Back
+```
+
+가 한 덩어리로 연결되어 있습니다.
+
+Project 13에서는 여기에 **Register를 넣습니다.**
+
+```text
+Fetch
+  │
+  ▼
+[Pipeline Register]
+  │
+  ▼
+Decode
+  │
+  ▼
+[Pipeline Register]
+  │
+  ▼
+Execute
+  │
+  ▼
+[Pipeline Register]
+  │
+  ▼
+Write Back
+```
+
+가장 먼저 **2-stage pipeline**부터 시작하겠습니다.
+
+```text
+Stage 1                 Stage 2
+
+Fetch ──► [Reg] ──► Decode/Execute
+```
+
+여기서 중요한 새 개념은:
+
+- Pipeline register
+- stage 간 데이터 전달
+- 한 instruction의 latency
+- 여러 instruction이 동시에 서로 다른 stage에 존재하는 것
+- `Reg`가 datapath를 시간적으로 분리하는 방법
+
+입니다.
+
+**다음 단계부터는 CPU를 실제로 pipeline 구조로 변환하겠습니다.**
