@@ -1013,4 +1013,654 @@ WB #4 : R2 <= 0x30
 
 ---
 
+---
+
+"Execute" 스테이지 에서 정상적인 data path 와 forwarding data path 간의 충돌은 어떻게 해결하나?
+
+---
+
+좋은 질문입니다. 결론부터 말하면 **정상 data path와 forwarding data path가 서로 충돌하는 것이 아니라, MUX가 둘 중 하나를 선택하도록 설계**합니다.
+
+그리고 제가 방금 제시한 코드의 forwarding은 정확히 말하면 **Execute stage 자체가 아니라 ID/EX에 들어가는 operand를 선택하는 forwarding**입니다.
+
+### 1. 기본 구조
+
+예를 들어 `ADD R3, R1, R2`가 Execute에 들어간다고 합시다.
+
+정상 경로는:
+
+```text
+Register File
+     │
+     ├── R1 ──────┐
+     │            │
+     │         ┌──▼──┐
+     │         │ MUX │────► ALU A
+     │         └──▲──┘
+     │            │
+     │       Forwarding
+     │            │
+     ▼            │
+  EX/WB ──────────┘
+```
+
+즉 **ALU 입력 앞에 MUX가 존재**합니다.
+
+---
+
+## 2. MUX가 선택한다
+
+예를 들어 `rs1`의 정상 Register File 값이:
+
+```text
+R1 = 0x20
+```
+
+인데 바로 앞 instruction의 결과가:
+
+```text
+EX/WB = R1 <= 0x30
+```
+
+이라면 Register File에는 아직 `0x20`이 있을 수 있습니다.
+
+이때:
+
+```text
+Normal path:
+RegisterFile.R1 = 0x20
+
+Forward path:
+EX/WB.R1 = 0x30
+```
+
+두 값이 모두 ALU 쪽으로 **동시에 물리적으로 존재**할 수 있습니다.
+
+하지만 ALU에 들어가는 값은 하나뿐입니다.
+
+```text
+                    ┌──────────────┐
+RegisterFile ──────►│              │
+                    │     MUX      ├────► ALU
+Forwarding ────────►│              │
+                    └──────▲───────┘
+                           │
+                       select
+```
+
+---
+
+# 3. 선택 조건
+
+개념적으로는:
+
+```scala
+if (forwardingNeeded) {
+    aluInputA := forwardedData
+} else {
+    aluInputA := registerFileData
+}
+```
+
+입니다.
+
+제가 앞에서 작성한 코드의:
+
+```scala
+forwardedA := regFile.io.readDataA
+
+when(
+  exWbValid &&
+  exWbWriteEnable &&
+  exWbWriteAddress === decoder.io.rs1
+) {
+  forwardedA := exWbWriteData
+}
+```
+
+가 바로 이 MUX를 표현합니다.
+
+즉:
+
+```text
+forwarding 조건 = false
+        │
+        ▼
+Register File ──► forwardedA ──► ALU
+
+forwarding 조건 = true
+        │
+        ▼
+EX/WB ──────────► forwardedA ──► ALU
+```
+
+입니다.
+
+---
+
+# 4. 그래서 "충돌"이 아니다
+
+이 부분이 Pipeline 설계에서 굉장히 중요합니다.
+
+### 잘못된 생각
+
+```text
+Register File ─────┐
+                   ├──► ALU
+Forwarding ────────┘
+
+두 값이 동시에 ALU에 들어간다?
+```
+
+이렇게 하지 않습니다.
+
+### 실제 구조
+
+```text
+Register File ─────┐
+                   ▼
+                  MUX ─────► ALU
+                   ▲
+Forwarding ───────┘
+```
+
+**MUX가 선택합니다.**
+
+따라서 이것은 충돌 해결이라기보다 **operand selection**입니다.
+
+---
+
+# 5. 그런데 더 중요한 문제가 하나 있다
+
+현재 우리가 만든 CPU에서는 forwarding을:
+
+```text
+EX/WB → ID/EX
+```
+
+로 하고 있습니다.
+
+이것은 교육용으로 이해하기 쉽지만, 일반적인 pipeline에서는 forwarding을 좀 더 명확하게:
+
+```text
+             ┌──────────────┐
+             │ RegisterFile │
+             └──────┬───────┘
+                    │
+                    ▼
+                 ID/EX
+                    │
+                    ▼
+                  Execute
+                 ┌─────┐
+                 │ ALU │
+                 └─────┘
+                    ▲
+                    │
+             ┌──────┴──────┐
+             │ Forward MUX │
+             └──────▲──────┘
+                    │
+              EX/MEM, MEM/WB
+```
+
+처럼 **ALU 입력 직전에 forwarding MUX를 두는 방식**이 일반적입니다.
+
+특히 실제 5-stage CPU에서는:
+
+```text
+IF → ID → EX → MEM → WB
+```
+
+이고 forwarding이:
+
+```text
+EX/MEM ──────┐
+             ├──► ALU input MUX
+MEM/WB ──────┤
+             │
+Register ────┘
+```
+
+처럼 됩니다.
+
+---
+
+# 6. 우리 CPU에서는 어떻게 해야 하나?
+
+우리 CPU는 현재:
+
+```text
+IF
+ ↓
+IF/ID
+ ↓
+ID
+ ↓
+ID/EX
+ ↓
+EX
+ ↓
+EX/WB
+ ↓
+WB
+```
+
+입니다.
+
+따라서 지금 구조에서는 **ID/EX register에 값을 저장하기 전에 forwarding을 선택**하고 있습니다.
+
+```text
+Register File ───────┐
+                     │
+                     ▼
+                  Forward
+                    MUX
+                     │
+                     ▼
+                  ID/EX
+                     │
+                     ▼
+                    ALU
+```
+
+이 방식도 동작할 수 있습니다.
+
+하지만 여기에는 중요한 차이가 있습니다.
+
+> **forwarding을 ID 단계에서 할 것인가, EX 단계에서 할 것인가**
+
+입니다.
+
+CPU 설계에서 일반적으로 더 깔끔한 방식은 **EX stage의 ALU 입력 앞에 forwarding MUX를 두는 것**입니다.
+
+---
+
+## 7. 다음 단계에서 우리가 할 개선
+
+지금 만든 4-stage CPU를 한 단계 더 제대로 다듬는다면:
+
+```text
+IF
+ │
+ ▼
+[IF/ID]
+ │
+ ▼
+ID
+ │
+ ▼
+[ID/EX]
+ │
+ ▼
+┌─────────────────────┐
+│ Forwarding MUX      │
+│                     │
+│ RegFile ───────┐    │
+│ EX/WB ─────────┼──► ALU
+│                │    │
+└────────────────┘
+```
+
+로 만들고,
+
+```text
+ForwardA
+ForwardB
+```
+
+라는 control signal을 만들어서
+
+```text
+00 = Register File
+01 = EX/WB
+10 = 다른 forwarding source
+```
+
+처럼 명시적으로 선택하도록 만들 수 있습니다.
+
+**이게 실제 CPU의 forwarding unit 설계로 이어지는 핵심 개념입니다.**
+
+그리고 지금 질문하신 **"정상 경로와 forwarding 경로가 충돌하면 어떻게 하지?"**에 대한 가장 중요한 한 문장은:
+
+> **충돌시키지 않는다. ALU 입력 앞의 MUX와 forwarding control logic으로 정확히 하나의 source만 선택한다.**
+
+입니다.
+
+---
+
+---
+
+```
+[info] [Progress] Start PipelinedMiniCpu test simulation with seed 725150158
+[info] LOAD R0 <= 0x10
+[info] LOAD R1 <= 0x20
+[info] LOAD R2 <= 0x00
+[info] LOAD R3 <= 0x00
+[info] WB #1 : R2 <= 0x30
+[info] WB #2 : R1 <= 0x10
+[info] WB #3 : R3 <= 0x20
+[info] [Error] Simulation failed at time=251
+[error] Exception in thread "main" java.lang.AssertionError: assertion failed
+```
+
+---
+
+
+네. **이 실패는 오히려 아주 좋은 결과입니다.** 지금 실제 pipeline hazard가 정확히 드러났습니다.
+
+```text
+WB #1 : R2 <= 0x30   ← ADD 정상
+WB #2 : R1 <= 0x10   ← SUB 정상
+WB #3 : R3 <= 0x20   ← ❌ AND가 이전 R1=0x20을 사용
+```
+
+즉, **제가 앞서 넣은 EX/WB → ID/EX forwarding만으로는 부족했습니다.**
+
+---
+
+# 1. 정확히 무슨 일이 발생했나?
+
+명령어는:
+
+```text
+ADD R2, R0, R1
+SUB R1, R1, R0
+AND R3, R1, R1
+OR  R2, R2, R0
+```
+
+입니다.
+
+Pipeline을 보면:
+
+```text
+Cycle     IF       ID       EX       WB
+------------------------------------------------
+C0        ADD
+C1        SUB      ADD
+C2        AND      SUB      ADD
+C3        OR       AND      SUB      ADD
+C4                 OR       AND      SUB
+C5                          OR       AND
+C6                                   OR
+```
+
+문제는 **C3**입니다.
+
+```text
+C3
+
+EX : SUB R1,R1,R0
+     → 결과 0x10
+
+ID : AND R3,R1,R1
+     → R1이 필요함
+```
+
+그런데 우리의 forwarding은:
+
+```text
+EX/WB → ID
+```
+
+뿐입니다.
+
+C3의 EX/WB에는 아직 **ADD의 결과 R2=0x30**이 들어 있습니다.
+
+즉 AND가 보는 것은:
+
+```text
+Register File R1 = 0x20   ← 아직 SUB 결과가 WB되지 않음
+EX/WB             = R2=0x30
+```
+
+그래서 AND는:
+
+```text
+0x20 & 0x20 = 0x20
+```
+
+을 계산한 것입니다.
+
+정확히 지금 로그가 그걸 증명합니다.
+
+---
+
+# 2. 해결 방법
+
+현재 4-stage 구조에서는 **두 종류의 forwarding**이 필요합니다.
+
+```text
+                         ┌──────────────┐
+Register File ──────────►│              │
+                         │ Forward MUX  ├──► ID/EX
+EX result ──────────────►│              │
+                         │              │
+EX/WB result ───────────►│              │
+                         └──────────────┘
+```
+
+즉:
+
+```text
+정상 Register File
+        │
+        │
+        ▼
+      MUX ───────► ID/EX
+        ▲
+        │
+   ┌────┴────┐
+   │         │
+EX result   EX/WB result
+```
+
+### 우선순위
+
+가장 최신 결과가 우선입니다.
+
+```text
+1. 현재 EX stage 결과
+2. EX/WB 결과
+3. Register File
+```
+
+왜냐하면 현재 EX의 결과가 EX/WB보다 **한 instruction 더 최신**이기 때문입니다.
+
+---
+
+# 3. 우리 CPU에 필요한 수정
+
+기존의:
+
+```scala
+when(
+  exWbValid &&
+  exWbWriteEnable &&
+  exWbWriteAddress === decoder.io.rs1
+) {
+  forwardedA := exWbWriteData
+}
+```
+
+에 **현재 EX 결과 forwarding**을 추가해야 합니다.
+
+핵심은:
+
+```scala
+when(
+  idExValid &&
+  idExRd === decoder.io.rs1
+) {
+  forwardedA := alu.io.result.asBits
+} elsewhen(
+  exWbValid &&
+  exWbWriteEnable &&
+  exWbWriteAddress === decoder.io.rs1
+) {
+  forwardedA := exWbWriteData
+}
+```
+
+그리고 B도 동일합니다.
+
+```scala
+when(
+  idExValid &&
+  idExRd === decoder.io.rs2
+) {
+  forwardedB := alu.io.result.asBits
+} elsewhen(
+  exWbValid &&
+  exWbWriteEnable &&
+  exWbWriteAddress === decoder.io.rs2
+) {
+  forwardedB := exWbWriteData
+}
+```
+
+---
+
+# 4. 그런데 이걸 그대로 넣으면 중요한 문제가 하나 있습니다
+
+현재 코드 구조에서는 `alu.io.result`가:
+
+```text
+ID/EX register
+       ↓
+      ALU
+       ↓
+alu.result
+       ↓
+forwarding MUX
+       ↓
+ID/EX register
+```
+
+가 됩니다.
+
+처음 보면 **feedback loop처럼 보이지만 실제로는 combinational loop가 아닙니다.**
+
+왜냐하면 중간에:
+
+```text
+ID/EX register
+```
+
+라는 clocked element가 있기 때문입니다.
+
+실제 경로는:
+
+```text
+       ┌───────────────┐
+       │               │
+       ▼               │
+    ID/EX Reg          │
+       │               │
+       ▼               │
+      ALU              │
+       │               │
+       ▼               │
+ Forward MUX ──────────┘
+       │
+       ▼
+  next ID/EX Reg value
+```
+
+입니다.
+
+**현재 ID/EX 값 → ALU → forwarding → 다음 clock의 ID/EX 값**
+
+이므로 정상적인 synchronous feedback 구조입니다.
+
+---
+
+# 5. 더 정확한 Forwarding 우선순위
+
+따라서 우리가 만들 forwarding logic은 개념적으로:
+
+```text
+if (EX stage가 같은 register를 생성)
+    use EX result
+else if (EX/WB가 같은 register를 생성)
+    use EX/WB result
+else
+    use Register File
+```
+
+입니다.
+
+이를 표로 보면:
+
+| Source | 우선순위 | 이유 |
+|---|---:|---|
+| EX result | 1 | 가장 최신 결과 |
+| EX/WB | 2 | 그 다음 최신 결과 |
+| Register File | 3 | 이미 commit된 값 |
+
+---
+
+# 6. 이번 실패는 정확히 이것을 검증했다
+
+현재 로그:
+
+```text
+R2 <= 0x30
+R1 <= 0x10
+R3 <= 0x20
+```
+
+은 CPU가 완전히 망가진 것이 아닙니다.
+
+오히려:
+
+```text
+ADD → 정상
+SUB → 정상
+AND → RAW hazard 발생
+```
+
+이라는 것을 정확하게 보여줍니다.
+
+즉 우리가 지금 처음으로 **실제 CPU pipeline hazard를 simulation으로 발견한 것**입니다.
+
+---
+
+# 7. 다음 수정 후 기대값
+
+Forwarding을 제대로 넣으면:
+
+```text
+WB #1 : R2 <= 0x30
+WB #2 : R1 <= 0x10
+WB #3 : R3 <= 0x10
+WB #4 : R2 <= 0x30
+
+4-stage pipelined Mini CPU test passed.
+```
+
+가 되어야 합니다.
+
+그리고 이 구조에서 중요한 forwarding은:
+
+```text
+SUB R1,...
+     │
+     │ EX result = 0x10
+     ▼
+┌─────────────┐
+│ Forward MUX │
+└──────┬──────┘
+       │
+       ▼
+AND R3,R1,R1
+```
+
+입니다.
+
+**즉 이번 실패의 원인은 `EX/WB forwarding`만 있고 `EX → ID/EX forwarding`이 없었던 것입니다.**
+
+이 수정은 단순한 테스트 수정이 아니라, 우리가 방금 질문했던 **"정상 datapath와 forwarding datapath를 어떻게 충돌 없이 선택하는가?"**에 대한 실제 CPU 구현입니다.
+
 
