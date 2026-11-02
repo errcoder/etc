@@ -1,0 +1,397 @@
+나의 SoC 구현 목표: 실제 RISC-V CPU를 사용한 SoC를 빠르게 구현하고 싶다. 개발 환경: 시뮬레이션부터 시작하고 나중에 FPGA. 이 목표에 맞춰 SpinalHDL 1.15.0 기준으로 구체적인 구현 계획을 세워줘.
+
+---
+
+좋습니다. 그러면 목표를 SpinalHDL 1.15.0 기반의 RISC-V SoC를 시뮬레이션으로 완성하고, 이후 FPGA에서 실제 구동하는 것으로 정하겠습니다.
+
+이 프로젝트에서는 CPU 자체를 처음부터 구현하지 않습니다. 검증된 SpinalHDL 기반 RISC-V CPU인 VexRiscv를 사용하고, SoC의 나머지 부분을 직접 구성하는 전략을 추천합니다.
+
+핵심은 다음과 같습니다.
+
+- CPU: VexRiscv
+- SoC 구성: 직접 설계
+- Bus: Wishbone 또는 APB3부터 시작
+- Memory: ROM / RAM
+- Peripheral: UART / GPIO / Timer
+- Simulation: SpinalSim
+- FPGA: Verilog 생성 후 FPGA 합성 및 구현
+- Software: RISC-V GCC로 C 프로그램 빌드
+
+최종 목표는 PC에서 C 프로그램을 컴파일한 후, 우리가 만든 SoC의 RAM/ROM에 넣어 실제 RISC-V CPU가 실행하는 것입니다.
+
+# 1. 최종 목표 아키텍처
+
+[Tom Verbeure on the VexRiscV CPU: "A New Way to Design" - AB Open](https://images.openai.com/static-rsc-4/lE4x0RBz21AexaQK9gIxR_cAvHUbCqvr0akU8QYFu-Q5X6NDh-RRWTYRGVk3NaISY_uCXCPk1y77eCMBjmW27o64DFk1tJNh8P2Du_Op_j8fL2BY7NFgKVE2WIJxUzVji32B78on1W05Ub_I2HbHrjvLg8chnt08RPbbIUYz4TI?purpose=inline)
+
+[abopen.com](https://abopen.com/news/tom-verbeure-on-the-vexriscv-cpu-a-new-way-to-design/?utm_source=chatgpt.com)
+
+우리가 만들 SoC의 목표 구조입니다.
+
+```
+                   RISC-V SoC
++-------------------------------------------------+
+|                                                 |
+|   +-------------------+                         |
+|   |     VexRiscv      |                         |
+|   |                   |                         |
+|   |  Instruction Bus  |                         |
+|   |  Data Bus         |                         |
+|   +---------+---------+                         |
+|             |                                   |
+|   +---------+----------+                        |
+|   |    Bus Interconnect |                       |
+|   +---+--------+--------+                       |
+|       |        |                                |
+|   +---+---+ +--+---+ +----------------------+   |
+|   |  ROM  | | RAM  | |   Peripheral Bus     |   |
+|   +-------+ +------+ +----------+-----------+   |
+|                                  |              |
+|                    +-------------+----------+   |
+|                    |             |          |   |
+|                  UART           GPIO       Timer|
+|                    |             |          |   |
++--------------------+-------------+----------+---+
+                     |
+                  External I/O
+```
+
+처음부터 모든 기능을 구현하지 않고, CPU가 명령어를 실행하는 가장 작은 SoC부터 단계적으로 확장하겠습니다.
+
+# 2. 구현 전략: Murax를 출발점으로 사용
+
+여기서 중요한 선택이 하나 있습니다.
+
+VexRiscv를 직접 인스턴스화하는 것보다 Murax를 먼저 실행해 보는 것이 훨씬 빠릅니다.
+
+Murax는 이미 VexRiscv, RAM, APB Peripheral, UART, GPIO, Timer, Interrupt 기능을 통합한 작은 SoC입니다.
+
+공식 프로젝트에서 제공하는 기능은 다음과 같습니다.
+
+| 구성             | Murax                |
+| -------------- | -------------------- |
+| CPU            | VexRiscv RV32I[M]    |
+| On-chip RAM    | 8 KB                 |
+| Peripheral Bus | APB                  |
+| UART           | TX/RX FIFO 포함        |
+| GPIO           | 32 bit               |
+| Timer          | Prescaler 및 2개 Timer |
+| Interrupt      | 지원                   |
+| Debug          | JTAG / GDB / OpenOCD |
+
+Murax는 iCE40 FPGA까지 고려한 경량 SoC이며, UART Echo와 LED Blink 예제도 제공합니다.
+
+따라서 다음 두 가지를 병행하지 않고 순서대로 진행하겠습니다.
+
+1. 기존 Murax를 실행해 RISC-V SoC 전체 구조를 확인합니다.
+2. Murax 구조를 참고하여 필요한 부분을 우리 프로젝트에 통합합니다.
+
+이렇게 하면 CPU 내부 구현에 시간을 낭비하지 않으면서 SoC 설계 방법을 익힐 수 있습니다.
+
+# 3. 전체 구현 로드맵
+
+총 7개 프로젝트로 나누겠습니다.
+
+Phase 1 — VexRiscv 환경 구축
+
+최우선
+
+# Project 1
+
+VexRiscv CPU 실행 및 검증
+
+학습 내용:
+
+- VexRiscv 프로젝트 구조
+- CPU Configuration 및 Plugin
+- SpinalHDL 1.15.0 호환성 확인
+- Verilog 생성
+- CPU 단독 시뮬레이션
+- 기본 RISC-V 명령어 실행 확인
+
+완료 조건:
+
+- CPU RTL 생성 성공
+- 시뮬레이션 성공
+- 실제 명령어 실행 확인
+
+Phase 2 — SoC 기본 구성
+
+# Project 2
+
+CPU + ROM + RAM
+
+학습 내용:
+
+- VexRiscv CPU 인스턴스화
+- Instruction Bus 연결
+- Data Bus 연결
+- ROM / RAM 연결
+- Address Mapping
+- CPU Reset 및 Boot Address
+
+완료 조건:
+
+- ROM에서 명령어 Fetch
+- RAM에 데이터 Write / Read
+- CPU가 ROM 프로그램을 정상 실행
+
+Phase 3 — Bus System
+
+# Project 3
+
+APB3 Peripheral Bus
+
+학습 내용:
+
+- APB3 Master / Slave
+- APB3 Bridge
+- Address Decoder
+- Peripheral Register Mapping
+- CPU와 Peripheral 연결
+
+완료 조건:
+
+- CPU가 Memory-mapped Register 접근
+- APB Read / Write 정상 동작
+
+Phase 4 — Peripheral
+
+# Project 4
+
+UART + GPIO + Timer
+
+구현 순서:
+
+1. GPIO: LED ON/OFF
+2. Timer: 주기적 Counter
+3. UART TX: 문자 출력
+4. UART RX: 문자 수신
+5. Interrupt Controller 연결
+
+완료 조건:
+
+- CPU가 C 프로그램으로 GPIO 제어
+- Timer Interrupt 처리
+- UART Echo 프로그램 실행
+
+Phase 5 — SoC 통합
+
+# Project 5
+
+Mini RISC-V SoC
+
+최종 통합:
+
+- VexRiscv
+- ROM / RAM
+- Bus Interconnect
+- APB3
+- UART / GPIO / Timer
+- Interrupt
+
+완료 조건:
+
+- C 프로그램 실행
+- UART 터미널 출력
+- GPIO 제어
+- 전체 SoC 시뮬레이션 통과
+
+Phase 6 — Software 환경
+
+# Project 6
+
+RISC-V GCC / ELF / Firmware
+
+학습 내용:
+
+- RISC-V GCC Toolchain
+- C 프로그램 컴파일
+- Linker Script
+- Startup Code
+- ELF / BIN / HEX
+- ROM 초기화
+
+완료 조건:
+
+- 직접 작성한 C 프로그램 실행
+- UART를 통한 결과 확인
+
+Phase 7 — FPGA
+
+# Project 7
+
+실제 FPGA SoC 구현
+
+학습 내용:
+
+- FPGA Top-Level
+- Clock / Reset
+- Pin Assignment
+- RAM Inference
+- Timing Constraint
+- Bitstream 생성
+
+완료 조건:
+
+- FPGA에서 CPU Boot
+- LED Blink
+- UART Echo
+- 실제 외부 장치 제어
+
+# 4. 프로젝트 디렉터리 구성
+
+기존 SpinalHDL 프로젝트와 분리해서 새로운 SoC 프로젝트를 만드는 것을 추천합니다.
+
+```
+RiscVSoC/
+│
+├── build.sbt
+├── project/
+│
+├── ext/
+│   └── VexRiscv/
+│
+├── src/
+│   ├── main/
+│   │   └── scala/
+│   │       └── soc/
+│   │           ├── cpu/
+│   │           │   └── CpuConfig.scala
+│   │           │
+│   │           ├── bus/
+│   │           │   ├── BusInterconnect.scala
+│   │           │   └── AddressMap.scala
+│   │           │
+│   │           ├── memory/
+│   │           │   ├── BootRom.scala
+│   │           │   └── OnChipRam.scala
+│   │           │
+│   │           ├── peripheral/
+│   │           │   ├── Gpio.scala
+│   │           │   ├── Uart.scala
+│   │           │   └── Timer.scala
+│   │           │
+│   │           └── top/
+│   │               └── MiniSoC.scala
+│   │
+│   └── test/
+│       └── scala/
+│           └── soc/
+│               ├── CpuSim.scala
+│               ├── MemorySim.scala
+│               └── MiniSoCSim.scala
+│
+└── firmware/
+    ├── startup.S
+    ├── linker.ld
+    └── main.c
+```
+
+`ext/VexRiscv`는 우선 Git Submodule로 가져오고, 검증된 특정 commit에 고정하겠습니다. 외부 CPU 코드를 수정하지 않고 우리 SoC 코드와 분리하는 것이 유지보수에 유리합니다.
+
+# 5. SpinalHDL 1.15.0 호환성 전략 — 중요
+
+이 부분은 시작할 때 반드시 확인해야 합니다.
+
+VexRiscv 공식 README에는 일부 버전에서 SpinalHDL의 unreleased master 버전이 필요할 수 있다고 명시되어 있습니다. 
+따라서 현재 프로젝트의 SpinalHDL 1.15.0과 바로 호환된다고 가정하면 안 됩니다.
+
+다음 순서로 처리하겠습니다.
+
+| 단계 | 작업                            |
+| -- | ----------------------------- |
+| 1  | 기존 SpinalHDL 1.15.0 환경 보존     |
+| 2  | VexRiscv 소스의 특정 commit 고정     |
+| 3  | 의존성 및 Scala 버전 확인             |
+| 4  | VexRiscv 단독 RTL 생성            |
+| 5  | 1.15.0에서 컴파일 및 시뮬레이션 검증       |
+| 6  | 호환성 문제가 있으면 별도 수정 또는 독립 빌드 검토 |
+
+중요한 원칙: SpinalHDL 1.15.0을 무작정 업그레이드하지 않겠습니다. 기존 학습 프로젝트의 환경도 그대로 유지하겠습니다.
+
+# 6. 시뮬레이션 검증 전략
+
+이번에는 단순히 컴파일 성공만으로 프로젝트 완료라고 판단하지 않겠습니다.
+
+지금까지 학습하면서 경험했던 SpinalSim의 타이밍 및 관찰 문제를 고려해 검증 기준을 강화하겠습니다.
+
+| 검증 항목       | 확인 내용                         |
+| ----------- | ----------------------------- |
+| CPU Boot    | Reset 해제 후 정상적인 명령어 Fetch     |
+| Instruction | ADD, SUB, LOAD, STORE, BRANCH |
+| Memory      | 주소 및 데이터 정합성                  |
+| Bus         | 요청과 응답 타이밍                    |
+| Peripheral  | Register Read / Write         |
+| UART        | 송수신 데이터 일치                    |
+| Interrupt   | Interrupt 발생 및 처리             |
+| Firmware    | C 프로그램 정상 실행                  |
+
+추가로 다음 원칙을 적용합니다.
+
+- 모든 시뮬레이션에 Timeout 적용
+- Clock Edge 기준으로 정확하게 동기화
+- Handshake의 `valid`, `ready`, `fire` 확인
+- CPU 명령어 실행 결과를 Reference와 비교
+- 필요 신호만 `simPublic()`으로 노출
+- VCD 파형으로 실제 실행 흐름 확인
+- 성공한 테스트는 회귀 테스트로 유지
+
+# 7. 최종 개발 환경
+
+추천 환경은 다음과 같습니다.
+
+| 도구               | 용도                      |
+| ---------------- | ----------------------- |
+| SpinalHDL 1.15.0 | Hardware Description    |
+| Scala 2.12 계열    | VexRiscv 프로젝트 호환성 기준 확인 |
+| SBT              | Build                   |
+| Verilator        | Simulation              |
+| GTKWave          | Waveform                |
+| RISC-V GCC       | C Firmware              |
+| VS Code          | 개발 환경                   |
+| FPGA Toolchain   | 추후 합성 및 구현              |
+
+SpinalHDL은 Verilog/VHDL 생성이 가능하고 Verilator와 GTKWave를 활용한 검증 흐름을 지원합니다.
+
+# 8. 실제 진행 순서
+
+제가 추천하는 첫 번째 작업은 Murax 전체를 무작정 수정하는 것이 아닙니다.
+
+다음 진행 단계
+
+# Project 1 — VexRiscv Bring-up
+
+목표: 실제 RISC-V CPU를 SpinalHDL 1.15.0 환경에서 실행하기
+
+1. VexRiscv GitHub 소스 분석
+2. 기존 SpinalHDL 프로젝트와 별도 환경 구성
+3. VexRiscv 최소 CPU Configuration 분석
+4. VexRiscv RTL 생성
+5. Verilator 시뮬레이션
+6. 간단한 RISC-V 프로그램 실행
+7. GTKWave로 CPU Pipeline 확인
+
+첫 번째 성공 기준
+
+VexRiscv가 실제 RISC-V 명령어를 Fetch하고 실행하는 것을 확인한다.
+
+참고할 공식 저장소:
+
+- [SpinalHDL/VexRiscv](https://github.com/SpinalHDL/VexRiscv?utm_source=chatgpt.com)
+- [VexRiscvSocSoftware](https://github.com/SpinalHDL/VexRiscvSocSoftware?utm_source=chatgpt.com)
+- [SpinalTemplateSbtDependencies](https://github.com/SpinalHDL/SpinalTemplateSbtDependencies?utm_source=chatgpt.com)
+
+마지막으로 프로젝트 진행 방식에 대한 약속입니다.
+
+지금까지처럼 한 단계씩 진행하겠습니다. 각 단계마다 다음을 제공하겠습니다.
+
+1. 전체 코드와 파일 위치
+2. 코드의 핵심 구조 설명
+3. 실행 명령
+4. 정상 실행 시 예상 로그
+5. 시뮬레이션 검증 방법
+6. 다음 단계로 넘어가기 위한 완료 조건
+
+기존에 직접 만든 Mini CPU와 Pipeline은 CPU 아키텍처를 이해하는 학습 결과물로 남겨두고, 이제부터는 검증된 RISC-V IP를 활용하는 실전 SoC 개발로 전환하겠습니다.
+
+다음은 Project 1: VexRiscv Bring-up부터 시작하면 됩니다.
