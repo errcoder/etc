@@ -961,3 +961,749 @@ R3 = 0x10
 ---
 
 ---
+
+좋습니다. 앞에서 중복되었던 forwarding 부분까지 제거하고, **Project 13-5의 최종본으로 사용할 `FiveStageLoadCpu.scala`**를 하나로 정리하겠습니다.
+
+이번 버전의 기준은 다음과 같습니다.
+
+- SpinalHDL **Release 34 / 1.15.0**
+- 5-stage: `IF → ID → EX → MEM → WB`
+- `LOAD`, `ADD`
+- Load-use hazard 검출
+- 정확히 1-cycle stall
+- `EX/MEM → EX` forwarding
+- `MEM/WB → EX` forwarding
+- `Bits`에 산술 연산을 직접 적용하지 않음
+- 정확한 instruction encoding
+- pipeline register의 `valid` 관리
+- `R0~R3` 초기화 인터페이스 포함
+- debug용 `stall`, `write-back`, register 출력 포함
+
+**실제 SpinalHDL 1.15.0 컴파일/시뮬레이션을 이 환경에서 실행한 것은 아니므로 “컴파일 통과”라고 주장하지는 않겠습니다.** 아래 코드는 앞서 발견된 타입/구조 오류를 제거한 최종 정리본입니다.
+
+## `FiveStageLoadCpu.scala`
+
+```scala
+import spinal.core._
+
+class FiveStageLoadCpu extends Component {
+
+  val io = new Bundle {
+    // ==========================================================
+    // CPU control
+    // ==========================================================
+
+    val run = in Bool()
+
+    // ==========================================================
+    // Register initialization
+    // ==========================================================
+
+    val loadEnable  = in Bool()
+    val loadAddress = in UInt(2 bits)
+    val loadData    = in Bits(8 bits)
+
+    // ==========================================================
+    // Debug outputs
+    // ==========================================================
+
+    val pc = out UInt(4 bits)
+
+    val stall = out Bool()
+
+    val wbEnable  = out Bool()
+    val wbAddress = out UInt(2 bits)
+    val wbData    = out Bits(8 bits)
+
+    val reg0 = out Bits(8 bits)
+    val reg1 = out Bits(8 bits)
+    val reg2 = out Bits(8 bits)
+    val reg3 = out Bits(8 bits)
+  }
+
+  // ==========================================================
+  // Register File
+  // ==========================================================
+
+  val registers = Vec(
+    Reg(Bits(8 bits)) init(0),
+    Reg(Bits(8 bits)) init(0),
+    Reg(Bits(8 bits)) init(0),
+    Reg(Bits(8 bits)) init(0)
+  )
+
+  // ==========================================================
+  // Instruction ROM
+  //
+  // R-type
+  //
+  // 15       12 11     10 9      8 7      6 5        0
+  // +-----------+---------+--------+--------+----------+
+  // |  opcode   |   rd    |  rs1   |  rs2   | reserved |
+  // +-----------+---------+--------+--------+----------+
+  //
+  // LOAD
+  //
+  // 15       12 11     10 9      8 7            0
+  // +-----------+---------+--------+--------------+
+  // |  opcode   |   rd    |  rs1   |    offset    |
+  // +-----------+---------+--------+--------------+
+  //
+  // opcode:
+  //
+  //   0000 = ADD
+  //   0101 = LOAD
+  //
+  // Program:
+  //
+  //   PC 0 : LOAD R1, [R0 + 0]
+  //   PC 1 : ADD  R2, R1, R3
+  // ==========================================================
+
+  val rom = Mem(
+    Bits(16 bits),
+    wordCount = 16
+  )
+
+  rom.init(
+    Seq(
+      B"16'h5400", // 0 : LOAD R1, [R0 + 0]
+      B"16'h09C0", // 1 : ADD  R2, R1, R3
+
+      B"16'h0000", // 2
+      B"16'h0000", // 3
+      B"16'h0000", // 4
+      B"16'h0000", // 5
+      B"16'h0000", // 6
+      B"16'h0000", // 7
+      B"16'h0000", // 8
+      B"16'h0000", // 9
+      B"16'h0000", // 10
+      B"16'h0000", // 11
+      B"16'h0000", // 12
+      B"16'h0000", // 13
+      B"16'h0000", // 14
+      B"16'h0000"  // 15
+    )
+  )
+
+  // ==========================================================
+  // Data RAM
+  //
+  // MEM[2] = 0x55
+  // ==========================================================
+
+  val dataMem = Mem(
+    Bits(8 bits),
+    wordCount = 16
+  )
+
+  dataMem.init(
+    Seq(
+      B"8'h00", // 0
+      B"8'h00", // 1
+      B"8'h55", // 2
+      B"8'h00", // 3
+      B"8'h00", // 4
+      B"8'h00", // 5
+      B"8'h00", // 6
+      B"8'h00", // 7
+      B"8'h00", // 8
+      B"8'h00", // 9
+      B"8'h00", // 10
+      B"8'h00", // 11
+      B"8'h00", // 12
+      B"8'h00", // 13
+      B"8'h00", // 14
+      B"8'h00"  // 15
+    )
+  )
+
+  // ==========================================================
+  // Program Counter
+  // ==========================================================
+
+  val pcReg = Reg(UInt(4 bits)) init(0)
+
+  val fetchInstruction = rom.readAsync(pcReg)
+
+  // ==========================================================
+  // IF / ID
+  // ==========================================================
+
+  val ifIdValid =
+    Reg(Bool()) init(False)
+
+  val ifIdInstruction =
+    Reg(Bits(16 bits)) init(0)
+
+  // ==========================================================
+  // Decode
+  // ==========================================================
+
+  val decOpcode =
+    ifIdInstruction(15 downto 12)
+
+  val decRd =
+    ifIdInstruction(11 downto 10).asUInt
+
+  val decRs1 =
+    ifIdInstruction(9 downto 8).asUInt
+
+  val decRs2 =
+    ifIdInstruction(7 downto 6).asUInt
+
+  val decOffset =
+    ifIdInstruction(7 downto 0)
+
+  val decIsAdd =
+    decOpcode === B"4'b0000"
+
+  val decIsLoad =
+    decOpcode === B"4'b0101"
+
+  // Which source operands does this instruction actually use?
+  //
+  // LOAD:
+  //   uses rs1
+  //   does NOT use rs2
+  //
+  // ADD:
+  //   uses rs1
+  //   uses rs2
+
+  val decUsesRs1 =
+    decIsLoad || decIsAdd
+
+  val decUsesRs2 =
+    decIsAdd
+
+  val decWriteEnable =
+    decIsLoad || decIsAdd
+
+  // ==========================================================
+  // Register File read
+  // ==========================================================
+
+  val decRegA =
+    registers(decRs1)
+
+  val decRegB =
+    registers(decRs2)
+
+  // ==========================================================
+  // ID / EX
+  // ==========================================================
+
+  val idExValid =
+    Reg(Bool()) init(False)
+
+  val idExIsLoad =
+    Reg(Bool()) init(False)
+
+  val idExWriteEnable =
+    Reg(Bool()) init(False)
+
+  val idExRd =
+    Reg(UInt(2 bits)) init(0)
+
+  val idExRs1 =
+    Reg(UInt(2 bits)) init(0)
+
+  val idExRs2 =
+    Reg(UInt(2 bits)) init(0)
+
+  val idExRegA =
+    Reg(Bits(8 bits)) init(0)
+
+  val idExRegB =
+    Reg(Bits(8 bits)) init(0)
+
+  val idExOffset =
+    Reg(Bits(8 bits)) init(0)
+
+  // ==========================================================
+  // EX / MEM
+  // ==========================================================
+
+  val exMemValid =
+    Reg(Bool()) init(False)
+
+  val exMemIsLoad =
+    Reg(Bool()) init(False)
+
+  val exMemWriteEnable =
+    Reg(Bool()) init(False)
+
+  val exMemRd =
+    Reg(UInt(2 bits)) init(0)
+
+  val exMemResult =
+    Reg(Bits(8 bits)) init(0)
+
+  // ==========================================================
+  // MEM / WB
+  // ==========================================================
+
+  val memWbValid =
+    Reg(Bool()) init(False)
+
+  val memWbIsLoad =
+    Reg(Bool()) init(False)
+
+  val memWbWriteEnable =
+    Reg(Bool()) init(False)
+
+  val memWbRd =
+    Reg(UInt(2 bits)) init(0)
+
+  val memWbResult =
+    Reg(Bits(8 bits)) init(0)
+
+  // ==========================================================
+  // Forwarding
+  //
+  // Priority:
+  //
+  //   EX/MEM
+  //       ↓
+  //   MEM/WB
+  //       ↓
+  //   Register File
+  //
+  // Important:
+  //
+  // EX/MEM LOAD cannot be forwarded.
+  //
+  // At EX/MEM stage a LOAD only has the memory address.
+  // The actual memory data is obtained in MEM stage.
+  // ==========================================================
+
+  val exForwardA =
+    Bits(8 bits)
+
+  val exForwardB =
+    Bits(8 bits)
+
+  // Default:
+  // Register File value
+
+  exForwardA := idExRegA
+  exForwardB := idExRegB
+
+  // ----------------------------------------------------------
+  // Forward operand A : rs1
+  // ----------------------------------------------------------
+
+  when(
+    exMemValid &&
+      exMemWriteEnable &&
+      !exMemIsLoad &&
+      (exMemRd === idExRs1)
+  ) {
+    exForwardA := exMemResult
+  } otherwise {
+    when(
+      memWbValid &&
+        memWbWriteEnable &&
+        (memWbRd === idExRs1)
+    ) {
+      exForwardA := memWbResult
+    }
+  }
+
+  // ----------------------------------------------------------
+  // Forward operand B : rs2
+  // ----------------------------------------------------------
+
+  when(
+    exMemValid &&
+      exMemWriteEnable &&
+      !exMemIsLoad &&
+      (exMemRd === idExRs2)
+  ) {
+    exForwardB := exMemResult
+  } otherwise {
+    when(
+      memWbValid &&
+        memWbWriteEnable &&
+        (memWbRd === idExRs2)
+    ) {
+      exForwardB := memWbResult
+    }
+  }
+
+  // ==========================================================
+  // EX stage
+  // ==========================================================
+
+  // exForwardA / exForwardB are Bits.
+  //
+  // Bits does not have '+',
+  // so convert to UInt before arithmetic.
+
+  val exAluResult =
+    (
+      exForwardA.asUInt +
+        exForwardB.asUInt
+    ).asBits
+
+  // LOAD effective address:
+  //
+  // UInt + UInt
+
+  val exLoadAddress =
+    exForwardA.asUInt +
+      idExOffset.asUInt
+
+  // Result sent to EX/MEM.
+  //
+  // ADD:
+  //   ALU result
+  //
+  // LOAD:
+  //   effective address
+
+  val exResult =
+    Bits(8 bits)
+
+  exResult := exAluResult
+
+  when(idExIsLoad) {
+    exResult := exLoadAddress.asBits
+  }
+
+  // ==========================================================
+  // Load-use hazard detection
+  //
+  // Example:
+  //
+  //   LOAD R1, [R0 + 0]
+  //   ADD  R2, R1, R3
+  //
+  // LOAD is currently in ID/EX.
+  // ADD is currently in IF/ID.
+  //
+  // The LOAD result is not available for EX yet.
+  // Therefore insert one bubble into ID/EX.
+  // ==========================================================
+
+  val loadUseHazard =
+    ifIdValid &&
+      idExValid &&
+      idExIsLoad &&
+      idExWriteEnable &&
+      (
+        (
+          decUsesRs1 &&
+            (idExRd === decRs1)
+        ) ||
+        (
+          decUsesRs2 &&
+            (idExRd === decRs2)
+        )
+      )
+
+  // ==========================================================
+  // MEM stage
+  // ==========================================================
+
+  // exMemResult contains:
+  //
+  //   ADD  -> ALU result
+  //   LOAD -> effective memory address
+  //
+  // Data memory has 16 words,
+  // therefore use address bits [3:0].
+
+  val dataMemAddress =
+    exMemResult(3 downto 0).asUInt
+
+  val memReadData =
+    dataMem.readAsync(dataMemAddress)
+
+  // ==========================================================
+  // Stall debug pulse
+  // ==========================================================
+
+  val stallPulse =
+    Reg(Bool()) init(False)
+
+  // ==========================================================
+  // Sequential pipeline update
+  // ==========================================================
+
+  // ----------------------------------------------------------
+  // Register initialization
+  // ----------------------------------------------------------
+
+  when(io.loadEnable) {
+    registers(io.loadAddress) := io.loadData
+  }
+
+  // ----------------------------------------------------------
+  // CPU running
+  // ----------------------------------------------------------
+
+  when(io.run) {
+
+    // ========================================================
+    // WB
+    // ========================================================
+
+    when(
+      memWbValid &&
+        memWbWriteEnable
+    ) {
+      registers(memWbRd) :=
+        memWbResult
+    }
+
+    // ========================================================
+    // MEM -> WB
+    // ========================================================
+
+    memWbValid :=
+      exMemValid
+
+    memWbIsLoad :=
+      exMemIsLoad
+
+    memWbWriteEnable :=
+      exMemWriteEnable
+
+    memWbRd :=
+      exMemRd
+
+    when(exMemIsLoad) {
+      memWbResult :=
+        memReadData
+    } otherwise {
+      memWbResult :=
+        exMemResult
+    }
+
+    // ========================================================
+    // EX -> MEM
+    // ========================================================
+
+    exMemValid :=
+      idExValid
+
+    exMemIsLoad :=
+      idExIsLoad
+
+    exMemWriteEnable :=
+      idExWriteEnable
+
+    exMemRd :=
+      idExRd
+
+    exMemResult :=
+      exResult
+
+    // ========================================================
+    // Default: no stall
+    // ========================================================
+
+    stallPulse := False
+
+    // ========================================================
+    // Hazard
+    // ========================================================
+
+    when(loadUseHazard) {
+
+      // ------------------------------------------------------
+      // Insert bubble into ID/EX
+      // ------------------------------------------------------
+
+      idExValid :=
+        False
+
+      idExIsLoad :=
+        False
+
+      idExWriteEnable :=
+        False
+
+      idExRd :=
+        0
+
+      idExRs1 :=
+        0
+
+      idExRs2 :=
+        0
+
+      idExRegA :=
+        0
+
+      idExRegB :=
+        0
+
+      idExOffset :=
+        0
+
+      // ------------------------------------------------------
+      // HOLD IF/ID
+      // ------------------------------------------------------
+
+      // No assignment is actually necessary here because
+      // registers naturally retain their values.
+      //
+      // Explicitly assigning a register to itself is avoided.
+
+      // ------------------------------------------------------
+      // HOLD PC
+      // ------------------------------------------------------
+
+      // No assignment:
+      // PC naturally retains its value.
+
+      // ------------------------------------------------------
+      // Debug
+      // ------------------------------------------------------
+
+      stallPulse := True
+
+    } otherwise {
+
+      // ======================================================
+      // ID -> EX
+      // ======================================================
+
+      idExValid :=
+        ifIdValid
+
+      idExIsLoad :=
+        ifIdValid &&
+          decIsLoad
+
+      idExWriteEnable :=
+        ifIdValid &&
+          decWriteEnable
+
+      idExRd :=
+        decRd
+
+      idExRs1 :=
+        decRs1
+
+      idExRs2 :=
+        decRs2
+
+      idExRegA :=
+        decRegA
+
+      idExRegB :=
+        decRegB
+
+      idExOffset :=
+        decOffset
+
+      // ======================================================
+      // IF -> ID
+      // ======================================================
+
+      ifIdValid :=
+        True
+
+      ifIdInstruction :=
+        fetchInstruction
+
+      // ======================================================
+      // PC
+      // ======================================================
+
+      pcReg :=
+        pcReg + 1
+    }
+  }
+
+  // ==========================================================
+  // Outputs
+  // ==========================================================
+
+  io.pc :=
+    pcReg
+
+  io.stall :=
+    stallPulse
+
+  io.wbEnable :=
+    memWbValid &&
+      memWbWriteEnable
+
+  io.wbAddress :=
+    memWbRd
+
+  io.wbData :=
+    memWbResult
+
+  io.reg0 :=
+    registers(0)
+
+  io.reg1 :=
+    registers(1)
+
+  io.reg2 :=
+    registers(2)
+
+  io.reg3 :=
+    registers(3)
+}
+```
+
+### 핵심적으로 이번 최종본에서 정리된 부분
+
+특히 이전 오류와 관련해서는 다음처럼 확정했다.
+
+```scala
+val exAluResult =
+  (
+    exForwardA.asUInt +
+      exForwardB.asUInt
+  ).asBits
+```
+
+즉 **`Bits + Bits`가 아니다.**
+
+LOAD 주소도:
+
+```scala
+val exLoadAddress =
+  exForwardA.asUInt +
+    idExOffset.asUInt
+```
+
+로 **`UInt + UInt`**이다.
+
+그리고 정확한 명령어는:
+
+```scala
+B"16'h5400"   // LOAD R1, [R0 + 0]
+B"16'h09C0"   // ADD  R2, R1, R3
+```
+
+이다.
+
+이제 이 CPU의 핵심 동작은
+
+```text
+LOAD R1
+    ↓
+   stall 1 cycle
+    ↓
+MEM/WB = R1 = 0x55
+    ↓
+forwarding
+    ↓
+ADD R2 = 0x55 + R3(0x10)
+    ↓
+R2 = 0x65
+```
+
+가 된다.
+
+즉 이 단계에서 배우는 핵심은 **“LOAD는 EX/MEM에서 바로 forwarding할 수 없기 때문에 1-cycle stall을 넣고, 그 다음 MEM/WB에서 EX로 forwarding한다”**는 것이다.
