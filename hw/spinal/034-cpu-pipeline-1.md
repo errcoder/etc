@@ -1663,4 +1663,71 @@ AND R3,R1,R1
 
 이 수정은 단순한 테스트 수정이 아니라, 우리가 방금 질문했던 **"정상 datapath와 forwarding datapath를 어떻게 충돌 없이 선택하는가?"**에 대한 실제 CPU 구현입니다.
 
+---
 
+---
+
+완벽합니다. ✅ **4-stage pipelined Mini CPU + RAW forwarding까지 통과**했습니다.
+
+이번 테스트는 단순 pipeline 동작보다 훨씬 중요한 것을 검증했습니다.
+
+```text
+WB #1 : R2 <= 0x30
+WB #2 : R1 <= 0x10
+WB #3 : R3 <= 0x10
+WB #4 : R2 <= 0x30
+```
+
+즉,
+
+```text
+ADD R2,R0,R1  → 0x30
+SUB R1,R1,R0  → 0x10
+AND R3,R1,R1  → 0x10
+OR  R2,R2,R0  → 0x30
+```
+
+가 pipeline을 통과하면서 **RAW dependency까지 올바르게 해결**됐습니다.
+
+### 현재 CPU
+
+```text
+          ┌───────┐
+          │ Fetch │
+          └───┬───┘
+              │
+          [ IF / ID ]
+              │
+              ▼
+          ┌───────┐
+          │Decode │
+          └───┬───┘
+              │
+          [ ID / EX ]
+              │
+              ▼
+          ┌─────────┐
+          │ Execute │◄──── Forwarding
+          └────┬────┘
+               │
+           [ EX / WB ]
+               │
+               ▼
+           Write Back
+```
+
+그리고 forwarding은 개념적으로:
+
+```text
+Register File ───────┐
+                     │
+EX result ───────────┼──► Forward MUX ─► ALU operand
+                     │
+EX/WB result ────────┘
+```
+
+까지 구현됐습니다.
+
+**Project 13의 핵심 기반은 이제 제대로 만들어졌습니다.**
+
+다음 단계에서는 단순 ALU dependency를 넘어 **branch/control hazard**를 다루겠습니다. 여기서 처음으로 `PC`와 pipeline에 대한 문제가 생기므로, CPU가 실제 프로세서처럼 한 단계 더 발전합니다.
