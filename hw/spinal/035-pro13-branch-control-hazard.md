@@ -1517,3 +1517,403 @@ BEQ
 
 다음 단계에서는 **이 코드의 simulation waveform을 cycle 단위로 뜯어서**, `BEQ`가 EX에 도착하는 순간 **2번과 3번이 정확히 어느 pipeline register에 있고, 왜 `IF/ID`와 `ID/EX`를 각각 0으로 만드는지** 확인하는 게 좋다. 이걸 이해하면 pipeline의 핵심은 거의 잡은 것이다.
 
+
+---
+
+---
+
+오류 수정
+
+---
+
+
+```scala
+rom.init(
+  Seq(
+    B"16'h0840", // 0: ADD R2, R0, R1 -> 0000 10 00 01 000000 -> 0840
+    B"16'h4A03", // 1: BEQ R2, R2, +3 -> 0100 10 10 00 000011 -> 4A03
+    B"16'h1D00", // 2: SUB R3, R1, R0 -> 0001 11 01 00 000000 -> 1D00
+    B"16'h1C40", // 3: SUB R3, R0, R1 -> 0001 11 00 01 000000 -> 1C40
+    B"16'h3E00", // 4: OR  R3, R2, R0 -> 0011 11 10 00 000000 -> 3E00
+    B"16'h0000", // 5
+    B"16'h0000", // 6
+    B"16'h0000"  // 7
+  )
+)
+```
+
+---
+
+맞다. 이번에는 **ROM encoding을 확정한 값으로 고정하고**, 그 ROM의 의미와 WB 순서까지 검증하도록 `PipelinedBranchCpuSim`을 다시 작성하겠다.
+
+특히 이번 simulation은 단순히 최종 `R3 == 0x30`만 보는 것이 아니라:
+
+1. `R2 = 0x30`이 실제로 WB 되는지
+2. `BEQ`가 target `PC=4`로 taken 되는지
+3. 잘못된 2번/3번 명령이 **WB를 발생시키지 않는지**
+4. 4번 `OR`만 최종적으로 `R3=0x30`을 만드는지
+5. 최종 WB가 정확히 **2회**인지
+
+를 모두 검사한다.
+
+---
+
+# `PipelinedBranchCpuSim.scala`
+
+```scala
+import spinal.core.sim._
+
+object PipelinedBranchCpuSim {
+
+  def main(args: Array[String]): Unit = {
+
+    SimConfig.withWave
+      .compile(new PipelinedBranchCpu)
+      .doSim { dut =>
+
+        dut.clockDomain.forkStimulus(10)
+
+        // ======================================================
+        // Initial register values
+        //
+        // R0 = 0x10
+        // R1 = 0x20
+        // R2 = 0x00
+        // R3 = 0x00
+        // ======================================================
+
+        dut.io.loadEnable #= true
+
+        dut.io.loadAddress #= 0
+        dut.io.loadData #= 0x10
+        dut.clockDomain.waitSampling()
+
+        dut.io.loadAddress #= 1
+        dut.io.loadData #= 0x20
+        dut.clockDomain.waitSampling()
+
+        dut.io.loadAddress #= 2
+        dut.io.loadData #= 0x00
+        dut.clockDomain.waitSampling()
+
+        dut.io.loadAddress #= 3
+        dut.io.loadData #= 0x00
+        dut.clockDomain.waitSampling()
+
+        dut.io.loadEnable #= false
+
+        println("LOAD R0 <= 0x10")
+        println("LOAD R1 <= 0x20")
+        println("LOAD R2 <= 0x00")
+        println("LOAD R3 <= 0x00")
+
+        // ======================================================
+        // Program
+        //
+        // 0: ADD R2, R0, R1
+        // 1: BEQ R2, R2, +3
+        // 2: SUB R3, R1, R0    <- must be flushed
+        // 3: SUB R3, R0, R1    <- must be flushed
+        // 4: OR  R3, R2, R0
+        //
+        // Expected execution:
+        //
+        //   0 -> 1 -> 4
+        //
+        // Expected result:
+        //
+        //   R2 = 0x30
+        //   R3 = 0x30
+        // ======================================================
+
+        dut.io.run #= true
+
+        var wbCount = 0
+
+        var branchSeen = false
+        var r2WriteSeen = false
+        var r3WriteSeen = false
+
+        // Record every WB operation.
+        val wbAddresses = scala.collection.mutable.ArrayBuffer[Int]()
+        val wbData      = scala.collection.mutable.ArrayBuffer[Int]()
+
+        // ======================================================
+        // Run enough cycles for:
+        //
+        //   pipeline fill
+        //   ADD
+        //   BEQ
+        //   flush
+        //   branch target fetch
+        //   OR
+        //   write-back
+        // ======================================================
+
+        for (cycle <- 0 until 14) {
+
+          dut.clockDomain.waitSampling()
+
+          // Let combinational outputs settle after the clock edge.
+          sleep(1)
+
+          // ----------------------------------------------------
+          // Branch observation
+          // ----------------------------------------------------
+
+          if (dut.io.branchTaken.toBoolean) {
+
+            branchSeen = true
+
+            val target = dut.io.branchTarget.toInt
+
+            println(
+              f"Cycle $cycle%2d : BRANCH TAKEN -> PC = $target%d"
+            )
+
+            assert(
+              target == 4,
+              s"BEQ target must be PC 4, but got PC $target"
+            )
+          }
+
+          // ----------------------------------------------------
+          // Write-back observation
+          // ----------------------------------------------------
+
+          if (dut.io.writeBackEnable.toBoolean) {
+
+            val address = dut.io.writeBackAddress.toInt
+            val data    = dut.io.writeBackData.toInt
+
+            wbCount += 1
+
+            wbAddresses += address
+            wbData += data
+
+            println(
+              f"Cycle $cycle%2d : WB #$wbCount%d : " +
+                f"R$address%d <= 0x$data%02X"
+            )
+
+            // --------------------------------------------------
+            // ADD result
+            //
+            // 0: ADD R2, R0, R1
+            //
+            // R2 = 0x10 + 0x20 = 0x30
+            // --------------------------------------------------
+
+            if (address == 2) {
+
+              assert(
+                data == 0x30,
+                f"ADD result wrong: R2 = 0x$data%02X"
+              )
+
+              r2WriteSeen = true
+            }
+
+            // --------------------------------------------------
+            // R3 must ONLY be written by instruction 4:
+            //
+            // 4: OR R3, R2, R0
+            //
+            // Expected:
+            //
+            //   0x30 | 0x10 = 0x30
+            //
+            // If instruction 2 or 3 survived the flush,
+            // their wrong result would appear here.
+            // --------------------------------------------------
+
+            if (address == 3) {
+
+              assert(
+                data == 0x30,
+                f"Wrong-path instruction wrote R3 = 0x$data%02X"
+              )
+
+              r3WriteSeen = true
+            }
+
+            // --------------------------------------------------
+            // No other register should be written in this test.
+            // --------------------------------------------------
+
+            assert(
+              address == 2 || address == 3,
+              s"Unexpected WB: R$address = 0x%02X".format(data)
+            )
+          }
+        }
+
+        dut.io.run #= false
+
+        sleep(1)
+
+        // ======================================================
+        // Verify branch
+        // ======================================================
+
+        assert(
+          branchSeen,
+          "BEQ was never taken"
+        )
+
+        // ======================================================
+        // Verify exactly two write-backs
+        //
+        // 1. ADD -> R2
+        // 2. OR  -> R3
+        //
+        // BEQ itself does not write back.
+        // Instructions 2 and 3 must be flushed.
+        // ======================================================
+
+        assert(
+          wbCount == 2,
+          s"Expected exactly 2 write-backs, but got $wbCount"
+        )
+
+        // ======================================================
+        // Verify WB #1
+        // ======================================================
+
+        assert(
+          wbAddresses(0) == 2,
+          s"WB #1 must target R2, got R${wbAddresses(0)}"
+        )
+
+        assert(
+          wbData(0) == 0x30,
+          f"WB #1 must write 0x30, got 0x${wbData(0)}%02X"
+        )
+
+        // ======================================================
+        // Verify WB #2
+        // ======================================================
+
+        assert(
+          wbAddresses(1) == 3,
+          s"WB #2 must target R3, got R${wbAddresses(1)}"
+        )
+
+        assert(
+          wbData(1) == 0x30,
+          f"WB #2 must write 0x30, got 0x${wbData(1)}%02X"
+        )
+
+        // ======================================================
+        // Verify both expected write-backs were observed
+        // ======================================================
+
+        assert(
+          r2WriteSeen,
+          "R2 write-back was not observed"
+        )
+
+        assert(
+          r3WriteSeen,
+          "R3 write-back was not observed"
+        )
+
+        // ======================================================
+        // Final register values
+        // ======================================================
+
+        val finalR0 = dut.io.debugR0.toInt
+        val finalR1 = dut.io.debugR1.toInt
+        val finalR2 = dut.io.debugR2.toInt
+        val finalR3 = dut.io.debugR3.toInt
+
+        println(f"Final R0 = 0x$finalR0%02X")
+        println(f"Final R1 = 0x$finalR1%02X")
+        println(f"Final R2 = 0x$finalR2%02X")
+        println(f"Final R3 = 0x$finalR3%02X")
+
+        assert(
+          finalR0 == 0x10,
+          f"R0 expected 0x10, got 0x$finalR0%02X"
+        )
+
+        assert(
+          finalR1 == 0x20,
+          f"R1 expected 0x20, got 0x$finalR1%02X"
+        )
+
+        assert(
+          finalR2 == 0x30,
+          f"R2 expected 0x30, got 0x$finalR2%02X"
+        )
+
+        assert(
+          finalR3 == 0x30,
+          f"R3 expected 0x30, got 0x$finalR3%02X"
+        )
+
+        // ======================================================
+        // Final result
+        // ======================================================
+
+        println()
+        println("==============================================")
+        println("Control hazard / branch flush test passed.")
+        println("==============================================")
+      }
+  }
+}
+```
+
+## 반드시 CPU의 ROM도 이것으로 맞춰야 한다
+
+`PipelinedBranchCpu.scala`의 ROM은 앞서 검증한 **정확한 encoding**으로 다음과 같아야 한다.
+
+```scala
+rom.init(
+  Seq(
+    B"16'h0840", // 0: ADD R2, R0, R1
+    B"16'h4A03", // 1: BEQ R2, R2, +3
+    B"16'h1D00", // 2: SUB R3, R1, R0
+    B"16'h1C40", // 3: SUB R3, R0, R1
+    B"16'h3E00", // 4: OR  R3, R2, R0
+    B"16'h0000", // 5
+    B"16'h0000", // 6
+    B"16'h0000"  // 7
+  )
+)
+```
+
+### 기대하는 결과
+
+정상적으로 flush가 동작한다면:
+
+```text
+LOAD R0 <= 0x10
+LOAD R1 <= 0x20
+LOAD R2 <= 0x00
+LOAD R3 <= 0x00
+
+... WB ... R2 <= 0x30
+... BRANCH TAKEN -> PC = 4
+... WB ... R3 <= 0x30
+
+Final R0 = 0x10
+Final R1 = 0x20
+Final R2 = 0x30
+Final R3 = 0x30
+
+Control hazard / branch flush test passed.
+```
+
+핵심은 **WB가 정확히 2번뿐이어야 한다는 것**이다.
+
+```text
+ADD ─────────────► WB R2=30
+BEQ ─────────────► no WB
+SUB ── FLUSH ────► no WB
+SUB ── FLUSH ────► no WB
+OR  ─────────────► WB R3=30
+```
+
+이렇게 해야 이번 테스트가 단순한 최종값 검사가 아니라 **실제로 pipeline flush가 작동했음을 검증하는 simulation**이 된다.
