@@ -886,3 +886,84 @@ grep -R "setAsDirectionLess" -n ext/VexRiscv/src/main/scala
 **중요:** 지금은 `VexRiscvTop.scala`를 이것저것 임의로 수정하지 마세요. 앞 단계에서 제가 VexRiscv API를 잘못 가정한 것이므로, 이번에는 실제 source를 기준으로 맞추겠습니다.
 
 ---
+
+---
+
+맞습니다. **앞으로 VexRiscv 원본 소스는 사용자의 로컬 파일을 수정하지 않고, 업스트림 GitHub의 현재 소스를 기준으로 확인하겠습니다.** 그리고 방금 오류의 원인은 제가 VexRiscv API를 잘못 사용한 것입니다.
+
+업스트림 `IBusSimplePlugin.scala`를 확인했습니다. 현재 구조는 명확합니다.
+
+- `IBusSimplePlugin` 내부에서 이미 `iBus`를 `master(IBusSimpleBus(this))`로 생성합니다.
+- 따라서 우리가 `plugin.iBus`에 다시 `master(...)`를 적용하면 안 됩니다.
+- 업스트림 공식 예제에서도 `plugin.iBus.setAsDirectionLess()` 후 `master(...)`를 **새로운 외부 bus를 만들 때** 사용합니다. [GitHub](https://github.com/SpinalHDL/VexRiscv/blob/master/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala?utm_source=chatgpt.com)
+
+특히 공식 `Linux.scala`에는 정확히 이런 패턴이 있습니다:
+
+```scala
+plugin.iBus.setAsDirectionLess()
+val iBus = master(IBusSimpleBus()).setName("iBus")
+```
+
+그리고 다른 공식 예제에서는 `plugin.iBus.toAxi4ReadOnly()`를 `master(...)`에 넘깁니다. [GitHub](https://github.com/SpinalHDL/VexRiscv/blob/master/src/main/scala/vexriscv/demo/Linux.scala?utm_source=chatgpt.com)
+
+### 따라서 `VexRiscvTop`은 이렇게 바꾸겠습니다
+
+우리 목적은 AXI 같은 외부 bus로 변환하는 게 아니라 **그냥 IBusSimpleBus를 SoC 내부 ROM에 연결**하는 것이므로, 업스트림 구조에 맞춰:
+
+```scala
+cpu.rework {
+  var iBus: IBusSimpleBus = null
+  var dBus: DBusSimpleBus = null
+
+  for (plugin <- cpu.config.plugins) plugin match {
+
+    case plugin: IBusSimplePlugin =>
+      plugin.iBus.setAsDirectionLess()
+      iBus = plugin.iBus
+
+    case plugin: DBusSimplePlugin =>
+      plugin.dBus.setAsDirectionLess()
+      dBus = plugin.dBus
+
+    case _ =>
+  }
+
+  // 여기서 iBus / dBus를 ROM/RAM에 연결
+}
+```
+
+처럼 접근하는 방향이 맞습니다.
+
+그리고 중요한 점 하나가 더 있습니다. 업스트림 `IBusSimpleBus` 자체가:
+
+```scala
+var cmd = Stream(IBusSimpleCmd())
+var rsp = Flow(IBusSimpleRsp())
+```
+
+입니다. 즉 우리가 앞서 작성했던 ROM의:
+
+```text
+cmdValid
+cmdReady
+cmdPc
+rspValid
+rspInst
+```
+
+형태와 정확히 대응합니다. [GitHub](https://github.com/SpinalHDL/VexRiscv/blob/master/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala?utm_source=chatgpt.com)
+
+또 `DBusSimpleBus`도 공식 소스에서 `cmd = Stream(...)`, `rsp = DBusSimpleRsp()` 구조로 정의되어 있습니다. [GitHub](https://github.com/SpinalHDL/VexRiscv/blob/master/src/main/scala/vexriscv/plugin/DBusSimplePlugin.scala?utm_source=chatgpt.com)
+
+**그러므로 기존 `InstructionRom.scala`의 인터페이스는 그대로 활용할 수 있습니다.**
+
+---
+
+그리고 한 가지는 제가 이전 답변에서 잘못 판단했습니다.
+
+`YamlPlugin` 때문에 SnakeYAML dependency가 필요한 것은 맞지만, **업스트림 전체 VexRiscv source를 unmanaged source로 넣는 현재 구조라면 `YamlPlugin.scala`도 반드시 compile됩니다.** 따라서 SnakeYAML dependency를 추가한 것은 맞는 수정입니다. `YamlPlugin`을 CPU config에서 제거하는 것과 source compilation 문제는 별개의 문제입니다.
+
+다음 답변에서는 추측하지 않고 **현재 업스트림 `IBusSimplePlugin`/`DBusSimplePlugin` API에 정확히 맞춘 `VexRiscvTop.scala` 전체 수정본**을 제시하겠습니다. 그 다음 바로 compile → elaboration → simulation 순서로 진행하면 됩니다.
+
+---
+
