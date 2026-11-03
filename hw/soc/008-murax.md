@@ -72,13 +72,7 @@ cpuPlugins = ArrayBuffer(
 )
 ```
 
-실제 소스의 구성은 이와 같으며, 각 Plugin의 설정은 CPU의 기능과 파이프라인 동작을 결정합니다.&#x20;
-
-[image](https://www.google.com/s2/favicons?domain=https://raw.githubusercontent.com\&sz=32)
-
-GitHub
-
-
+실제 소스의 구성은 이와 같으며, 각 Plugin의 설정은 CPU의 기능과 파이프라인 동작을 결정합니다.
 
 ### 1-2. CPU 생성 후 Plugin 객체를 순회하며 연결
 
@@ -279,4 +273,174 @@ class VexRiscvTop extends Component {
 
 다음 단계에서는 우선 1\~2번을 반영한 `VexRiscvTop.scala`를 정확히 작성하고, CPU 생성 후 Plugin 인터페이스가 실제로 정상 접근되는지부터 확인하겠습니다. 이렇게 해야 또 다른 추측성 lifecycle 수정으로 시간을 낭비하지 않습니다.
 
-참고로 이번 조사에서 기준으로 삼은 것은 사용자의 로컬 VexRiscv와 동일하다고 확인된 커밋 `baf7dc82f855eddaf5b0a20a6802c526f127e38`입니다.&#x20;
+참고로 이번 조사에서 기준으로 삼은 것은 사용자의 로컬 VexRiscv와 동일하다고 확인된 커밋 `baf7dc82f855eddaf5b0a20a6802c526f127e38`입니다.
+
+
+---
+
+---
+
+좋습니다. 이번 단계에서는 실제 Murax의 구조를 그대로 따라 사용자 정의 `SoCMemoryPlugin`을 제거하고, SoC 최상위 컴포넌트에서 CPU Plugin을 찾아 연결하는 방식으로 바꾸겠습니다.
+
+이번에는 ROM이나 RAM까지 한꺼번에 넣지 않겠습니다. 먼저 CPU를 생성하고 IBus, DBus, CSR 인터럽트 인터페이스에 접근해서 정상적으로 elaboration되는지 확인합니다.
+
+Murax의 실제 구현은 `new VexRiscv(...)` 직후 `cpu.plugins`를 순회하며 `IBusSimplePlugin`, `DBusSimplePlugin`, `CsrPlugin`을 처리합니다.
+
+## 1. `SoCMemoryPlugin` 제거
+
+`VexRiscvTop.scala`에서 다음 코드를 제거합니다.
+
+```
+val socMemoryPlugin = new SoCMemoryPlugin(...)
+cpuConfig.plugins += socMemoryPlugin
+```
+
+그리고 이번 단계에서는 `SoCMemoryPlugin.scala`를 사용하지 않습니다.
+
+## 2. `VexRiscvTop.scala` 교체
+
+아래 코드는 Murax의 Plugin 접근 방식을 따르면서, 아직 메모리가 없으므로 CPU의 메모리 요청을 받아들이지 않도록 구성한 단계별 검증용 코드입니다.
+
+```
+
+package myvexsoc
+
+import spinal.core._
+import vexriscv._
+import vexriscv.plugin._
+
+class VexRiscvTop extends Component {
+
+  // ------------------------------------------------------------
+  // CPU configuration
+  // ------------------------------------------------------------
+
+  val cpuConfig = CpuConfig.smallest()
+
+  // ------------------------------------------------------------
+  // CPU instance
+  // ------------------------------------------------------------
+
+  val cpu = new VexRiscv(cpuConfig)
+
+  // ------------------------------------------------------------
+  // SoC interrupt sources
+  // ------------------------------------------------------------
+
+  val externalInterrupt = False
+  val timerInterrupt = False
+
+  // ------------------------------------------------------------
+  // Connect CPU plugins to the SoC
+  // ------------------------------------------------------------
+
+  for (plugin <- cpu.plugins) {
+    plugin match {
+
+      // Instruction bus
+      case p: IBusSimplePlugin =>
+        p.iBus.cmd.ready := False
+
+        p.iBus.rsp.valid := False
+        p.iBus.rsp.error := False
+        p.iBus.rsp.inst := B(0, 32 bits)
+
+      // Data bus
+      case p: DBusSimplePlugin =>
+        p.dBus.cmd.ready := False
+
+        p.dBus.rsp.ready := False
+        p.dBus.rsp.error := False
+        p.dBus.rsp.data := B(0, 32 bits)
+
+      // CSR interrupt inputs
+      case p: CsrPlugin =>
+        p.externalInterrupt := externalInterrupt
+        p.timerInterrupt := timerInterrupt
+
+      case _ =>
+    }
+  }
+}
+
+```
+
+현재 코드의 동작
+
+| 인터페이스              | 연결 상태           | 의미                 |
+| ------------------ | --------------- | ------------------ |
+| IBus CMD           | `ready = False` | 명령어 요청을 수락하지 않음    |
+| IBus RSP           | `valid = False` | 명령어 응답을 전달하지 않음    |
+| DBus CMD           | `ready = False` | 데이터 접근 요청을 수락하지 않음 |
+| DBus RSP           | `ready = False` | 데이터 응답을 전달하지 않음    |
+| External interrupt | `False`         | 외부 인터럽트 없음         |
+| Timer interrupt    | `False`         | 타이머 인터럽트 없음        |
+
+따라서 이 단계에서는 CPU가 명령어를 실행하지 않습니다. 목적은 CPU 생성, Plugin 탐색, 버스 방향 및 CSR 입력 연결을 확인하는 것입니다.
+
+## 3. `build.sbt` 확인
+
+앞서 보여 준 설정에는 SpinalHDL compiler plugin이 없었습니다. 아직 추가하지 않았다면 다음 항목을 반드시 추가해 주세요.
+
+```
+compilerPlugin(
+  "com.github.spinalhdl" %% "spinalhdl-idsl-plugin" % spinalVersion
+)
+```
+
+의존성 부분은 다음과 같아야 합니다.
+
+```
+libraryDependencies ++= Seq(
+  "com.github.spinalhdl" %% "spinalhdl-core" % spinalVersion,
+  "com.github.spinalhdl" %% "spinalhdl-lib" % spinalVersion,
+  compilerPlugin(
+    "com.github.spinalhdl" %% "spinalhdl-idsl-plugin" % spinalVersion
+  ),
+  "org.yaml" % "snakeyaml" % "1.8"
+)
+```
+
+## 4. 실행
+
+기존 `VexRiscvTopSim.scala`를 그대로 사용하되, 이전에 추가했던 `dut.socMemoryPlugin.debug...` 참조는 제거해야 합니다.
+
+```
+sbt clean
+sbt update
+sbt "runMain myvexsoc.VexRiscvTopSim"
+```
+
+이번 단계의 성공 기준
+
+- `PhaseCreateComponent` 오류 없이 elaboration 완료
+- `StreamFifoLowLatency` 초기값 오류가 재발하지 않음
+- IBus / DBus / CSR 연결에서 null 참조가 발생하지 않음
+
+참고: 이번 코드가 해당 오류까지 해결한다고 미리 단정하지는 않겠습니다. 만약 동일한 `StreamFifoLowLatency` 오류가 발생하면 그 결과를 그대로 보내 주세요. 그때는 `CsrPlugin`과 `IBusSimplePlugin`의 실제 생성 경로를 다시 추적하겠습니다.
+
+## 다음 단계 예고
+
+이번 검증이 통과하면 다음에는 `InstructionRom`을 추가합니다.
+
+```
+VexRiscv
+   |
+   | IBus
+   v
+Instruction ROM
+   |
+   v
+ADDI x1, x0, 1
+ADDI x2, x0, 2
+ADD  x3, x1, x2
+JAL  x0, 0
+```
+
+그때부터는 CPU가 실제로 명령어를 가져와 실행하는 것을 시뮬레이션으로 확인하겠습니다.
+
+---
+
+---
+
+
