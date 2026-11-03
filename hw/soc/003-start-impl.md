@@ -628,4 +628,261 @@ JAL x0,0
 
 단순히 CPU가 instruction을 fetch하는 것뿐 아니라 **실제로 `JAL`까지 실행하고 있다는 증거**가 되기 때문입니다.
 
-그리고 다음 단계에서는 이 ROM을 그대로 유지하면서 **RAM을 추가하고 `SW/LW`를 실제로 수행해서 `x3 = 3`이 RAM에 저장되는 것까지 검증**하겠습니다. 그때부터 비로소 “CPU가 실제 RISC-V 프로그램을 실행한다”는 것을 확실하게 검증할 수 있습니다.
+그리고 다음 단계에서는 이 ROM을 그대로 유지하면서 **RAM을 추가하고 `SW/LW`를 실제로 수행해서 `x3 = 3`이 RAM에 저장되는 것까지 검증**하겠습니다. 
+그때부터 비로소 “CPU가 실제 RISC-V 프로그램을 실행한다”는 것을 확실하게 검증할 수 있습니다.
+
+---
+
+---
+
+좋습니다. 이 오류는 **코드 문제가 아니라 VexRiscv의 `YamlPlugin.scala`가 필요로 하는 SnakeYAML dependency가 우리 `build.sbt`에 빠진 것**입니다.
+
+현재 로그:
+
+```text
+object yaml is not a member of package org
+import org.yaml.snakeyaml.{DumperOptions, Yaml}
+```
+
+즉 다음 dependency가 필요합니다.
+
+```text
+org.yaml:snakeyaml
+```
+
+그리고 우리가 `CpuConfig.scala`에서 넣었던:
+
+```scala
+new YamlPlugin("cpu0.yaml")
+```
+
+때문에 `YamlPlugin.scala`까지 컴파일 대상이 되면서 이 문제가 발생했습니다.
+
+## 가장 깔끔한 수정
+
+사실 **이번 단계에서는 `YamlPlugin`이 필요 없습니다.**
+
+`YamlPlugin`은 CPU configuration YAML을 생성하기 위한 plugin이지, CPU 실행에 필요한 plugin이 아닙니다.
+
+따라서 `CpuConfig.scala`에서 이것만 제거하는 것을 권장합니다.
+
+```scala
+new YamlPlugin("cpu0.yaml")
+```
+
+### 수정된 `CpuConfig.scala`
+
+```scala
+package myvexsoc
+
+import spinal.core._
+import vexriscv._
+import vexriscv.plugin._
+import vexriscv.{plugin => vexPlugin}
+
+object CpuConfig {
+
+  def smallest(): VexRiscvConfig = {
+
+    VexRiscvConfig(
+      plugins = List(
+
+        new IBusSimplePlugin(
+          resetVector = 0x80000000l,
+          cmdForkOnSecondStage = false,
+          cmdForkPersistence = false,
+          prediction = NONE,
+          catchAccessFault = false,
+          compressedGen = false
+        ),
+
+        new DBusSimplePlugin(
+          catchAddressMisaligned = false,
+          catchAccessFault = false
+        ),
+
+        new CsrPlugin(
+          CsrPluginConfig.smallest
+        ),
+
+        new DecoderSimplePlugin(
+          catchIllegalInstruction = false
+        ),
+
+        new RegFilePlugin(
+          regFileReadyKind = vexPlugin.SYNC,
+          zeroBoot = false
+        ),
+
+        new IntAluPlugin,
+
+        new SrcPlugin(
+          separatedAddSub = false,
+          executeInsertion = false
+        ),
+
+        new LightShifterPlugin,
+
+        new HazardSimplePlugin(
+          bypassExecute           = false,
+          bypassMemory            = false,
+          bypassWriteBack         = false,
+          pessimisticUseSrc       = false,
+          pessimisticWriteRegFile = false,
+          pessimisticAddressMatch = false
+        ),
+
+        new BranchPlugin(
+          earlyBranch = false,
+          catchAddressMisaligned = false
+        )
+      )
+    )
+  }
+}
+```
+
+그리고 **`YamlPlugin`을 제거했으므로 `YamlPlugin.scala` 자체를 compile하지 않아도 되는가?**
+
+여기서 중요한 부분이 하나 있습니다.
+
+현재 build가:
+
+```scala
+Compile / unmanagedSourceDirectories +=
+  baseDirectory.value / "ext" / "VexRiscv" / "src" / "main" / "scala"
+```
+
+로 되어 있어서 VexRiscv의 **모든 Scala source**를 컴파일합니다.
+
+따라서 `YamlPlugin.scala`는 여전히 컴파일되고 SnakeYAML 오류가 다시 날 가능성이 있습니다.
+
+그러므로 이번에는 dependency를 추가하는 것이 더 안전합니다.
+
+## `build.sbt`에 SnakeYAML 추가
+
+```scala
+libraryDependencies ++= Seq(
+  "com.github.spinalhdl" %% "spinalhdl-core" % spinalVersion,
+  "com.github.spinalhdl" %% "spinalhdl-lib"  % spinalVersion,
+  "org.yaml" % "snakeyaml" % "2.2"
+)
+```
+
+즉:
+
+```scala
+ThisBuild / scalaVersion := "2.13.12"
+
+val spinalVersion = "1.13.0"
+
+lazy val root = (project in file("."))
+  .settings(
+    name := "MyVexSoc",
+
+    libraryDependencies ++= Seq(
+      "com.github.spinalhdl" %% "spinalhdl-core" % spinalVersion,
+      "com.github.spinalhdl" %% "spinalhdl-lib"  % spinalVersion,
+      "org.yaml" % "snakeyaml" % "2.2"
+    ),
+
+    Compile / unmanagedSourceDirectories +=
+      baseDirectory.value / "ext" / "VexRiscv" / "src" / "main" / "scala"
+  )
+```
+
+### 그런데 `scalaVersion`도 확인해야 합니다
+
+로그에:
+
+```text
+target/scala-2.13/classes
+```
+
+가 보입니다.
+
+따라서 현재 프로젝트는 **Scala 2.13**을 사용하고 있습니다.
+
+제가 앞에서 `2.12.18`을 제시한 것은 현재 사용자의 실제 환경과 맞지 않았습니다. 이 부분은 수정하는 것이 맞습니다.
+
+---
+
+## 지금은 이렇게 해주세요
+
+1. `build.sbt`에 SnakeYAML 추가
+2. `CpuConfig.scala`에서 `YamlPlugin` 제거
+3. SBT에서:
+
+```text
+clean
+compile
+```
+
+그리고:
+
+```text
+runMain myvexsoc.VexRiscvTopSim
+```
+
+을 실행하세요.
+
+### 만약 다음 오류가 나오면
+
+그 오류를 **그대로 붙여 주세요.**
+
+이번에는 한 번에 여러 부분을 추측해서 고치지 않고,
+
+```text
+VexRiscv source
+        ↓
+compile
+        ↓
+VexRiscvTop elaboration
+        ↓
+simulation
+```
+
+순서대로 하나씩 실제 환경에 맞춰 맞추겠습니다.
+
+특히 지금 단계에서는 **SnakeYAML 문제를 해결한 뒤 곧바로 `VexRiscvTop.scala`의 실제 bus API가 현재 clone과 맞는지 검증**하는 것이 다음 관문입니다.
+
+---
+
+---
+
+맞습니다. 이건 제가 앞에서 `master(plugin.iBus)`라고 작성한 부분이 잘못됐습니다.
+
+`master(...)`는 지금 사용 중인 SpinalHDL/VexRiscv 조합에서 사용할 수 있는 API가 아닙니다. **현재 VexRiscv의 `iBus`를 그대로 CPU 외부로 연결하는 방식으로 수정해야 합니다.**
+
+그리고 여기서는 더 이상 API를 추측하지 않고, **현재 clone한 VexRiscv의 실제 `IBusSimplePlugin`/`IBusSimpleBus` 정의에 맞춰 수정하는 게 맞습니다.**
+
+우선 `VexRiscvTop.scala`에서 이 부분:
+
+```scala
+iBus = master(plugin.iBus)
+  .setName("iBus")
+```
+
+을 제거하세요.
+
+다음으로 현재 VexRiscv source에서 `IBusSimplePlugin`이 어떻게 bus를 노출하는지 확인해야 합니다. 사용자가 현재 clone한 VexRiscv가 기준이므로, **`ext/VexRiscv/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala`의 내용**을 확인하면 정확히 맞출 수 있습니다.
+
+터미널에서 다음을 실행해 주세요.
+
+```bash
+sed -n '1,260p' ext/VexRiscv/src/main/scala/vexriscv/plugin/IBusSimplePlugin.scala
+```
+
+그리고 결과를 그대로 보내주세요.
+
+가능하면 이것도 같이 주세요.
+
+```bash
+grep -R "setAsDirectionLess" -n ext/VexRiscv/src/main/scala
+```
+
+이 두 결과를 보면 현재 버전의 정확한 연결 방식에 맞춰 `VexRiscvTop.scala`를 다시 작성할 수 있습니다.
+
+**중요:** 지금은 `VexRiscvTop.scala`를 이것저것 임의로 수정하지 마세요. 앞 단계에서 제가 VexRiscv API를 잘못 가정한 것이므로, 이번에는 실제 source를 기준으로 맞추겠습니다.
+
+---
