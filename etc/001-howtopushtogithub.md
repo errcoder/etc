@@ -112,4 +112,27 @@ git commit -m "Remove [폴더명] from version control"
 ```
 이 단계를 마치면 앞으로 해당 폴더 안의 파일이 수정되더라도 git status나 커밋 대상에 포함되지 않습니다. 
 만약 이미 원격 저장소에 올라가 있던 폴더였다면, 이 커밋을 git push하는 순간 원격 저장소에서도 해당 폴더가 삭제됩니다.
+
 ---
+
+---
+
+```
+┌──(rosa㉿melon)-[~/RiscVSoC]
+└─$ git add .                 
+warning: adding embedded git repository: ext/VexRiscv
+hint: You've added another git repository inside your current repository.
+hint: Clones of the outer repository will not contain the contents of
+hint: the embedded repository and will not know how to obtain it.
+hint: If you meant to add a submodule, use:
+hint:
+hint:   git submodule add <url> ext/VexRiscv
+hint:
+hint: If you added this path by mistake, you can remove it from the
+hint: index with:
+hint:
+hint:   git rm --cached ext/VexRiscv
+hint:
+hint: See "git help submodule" for more information.
+hint: Disable this message with "git config set advice.addEmbeddedRepo false"
+```
