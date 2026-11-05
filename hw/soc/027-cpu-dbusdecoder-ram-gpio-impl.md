@@ -525,7 +525,7 @@ byte mask를 사용하면 변경할 바이트만 선택할 수 있습니다.
 ```
 기존 값 : 0x11223344
 쓰기 값 : 0x000000AA
-mask    : 0b0001 <--- byte3 8bits all 0, byte2 all 0, byte1 all 0, byte0 all 1
+byte mask : 0b0001 <--- byte3 8bits all 0, byte2 all 0, byte1 all 0, byte0 all 1
 
 결과    : 0x112233AA
 ```
@@ -649,3 +649,408 @@ else
 
 다음 단계에서는 이 개념을 기준으로 GPIO 테스트벤치를 만들겠습니다. 단순히 레지스터에 값을 쓰고 읽는 것뿐 아니라, 
 외부 입력 변화와 출력 Enable까지 검증해야 GPIO가 제대로 구현되었다고 할 수 있습니다.
+
+
+---
+
+---
+
+이제 GPIO 주변장치의 시뮬레이션으로 넘어가겠습니다.
+
+이번 테스트의 목적은 단순히 레지스터에 값을 쓰고 읽는 것이 아닙니다. 
+CPU 대신 테스트벤치가 DBus Master 역할을 하면서, GPIO가 실제 주변장치처럼 동작하는지 확인합니다.
+
+검증 순서는 다음과 같습니다.
+
+1. 초기화 상태 확인
+2. GPIO_OUT 쓰기와 읽기
+3. GPIO_OE 쓰기와 읽기
+4. Byte mask를 이용한 부분 쓰기
+5. 외부 GPIO 입력과 2단계 동기화
+6. GPIO_IN 쓰기가 무시되는지 확인
+7. Reserved 주소의 Load Error 확인
+8. Load 응답이 정확히 한 사이클인지 확인
+
+## 1. 테스트벤치에서 사용할 버스 동작
+
+Load와 Store는 다음 순서로 진행합니다.
+
+Store
+
+1. 테스트벤치가 `cmd.valid = 1`로 설정
+2. 클럭 상승 에지에서 `cmd.ready = 1`이면 명령 수락
+3. 테스트벤치가 `cmd.valid = 0`으로 해제
+
+Load
+
+1. 테스트벤치가 Load 명령을 제시
+2. 클럭 상승 에지에서 명령 수락
+3. 다음 응답 구간에서 `rsp.ready`, `rsp.data`, `rsp.error` 확인
+4. 다음 클럭에서 `rsp.ready = 0`인지 확인
+
+여기서 `rsp.ready`는 CPU가 준비됐다는 의미가 아니라 읽기 응답 데이터가 유효하다는 의미입니다.
+
+## 2. `GpioPeripheralSim.scala`
+
+다음은 독립 실행 가능한 테스트벤치입니다. `GpioPeripheral.scala`와 같은 `myvexsoc` 패키지에 저장하세요.
+
+```scala
+package myvexsoc
+
+import spinal.core._
+import spinal.core.sim._
+
+object GpioPeripheralSim {
+
+  def main(args: Array[String]): Unit = {
+
+    SimConfig.withWave
+      .compile(new GpioPeripheral)
+      .doSim { dut =>
+
+        dut.clockDomain.forkStimulus(period = 10)
+
+        // ----------------------------------------------------
+        // Initial bus signals
+        // ----------------------------------------------------
+
+        dut.io.bus.cmd.valid   #= false
+        dut.io.bus.cmd.wr      #= false
+        dut.io.bus.cmd.address #= 0
+        dut.io.bus.cmd.data    #= 0
+        dut.io.bus.cmd.mask    #= 0
+        dut.io.bus.cmd.size    #= 2
+
+        dut.io.gpioIn #= 0
+
+        dut.clockDomain.waitSampling(2)
+
+        // ----------------------------------------------------
+        // Helper: Store
+        // ----------------------------------------------------
+
+        def write(
+            address: BigInt,
+            data: BigInt,
+            mask: Int = 0xF
+        ): Unit = {
+
+          dut.clockDomain.waitFallingEdge()
+
+          dut.io.bus.cmd.valid   #= true
+          dut.io.bus.cmd.wr      #= true
+          dut.io.bus.cmd.address #= address
+          dut.io.bus.cmd.data    #= data
+          dut.io.bus.cmd.mask    #= mask
+          dut.io.bus.cmd.size    #= 2
+
+          // Command acceptance
+          dut.clockDomain.waitSampling()
+
+          assert(
+            dut.io.bus.cmd.ready.toBoolean,
+            "Store command was not accepted"
+          )
+
+          // Deassert command
+          dut.clockDomain.waitFallingEdge()
+          dut.io.bus.cmd.valid #= false
+
+          assert(
+            !dut.io.bus.rsp.ready.toBoolean,
+            "Unexpected response for Store"
+          )
+        }
+
+        // ----------------------------------------------------
+        // Helper: Load
+        // ----------------------------------------------------
+
+        def read(
+            address: BigInt,
+            expectedData: BigInt,
+            expectedError: Boolean = false
+        ): Unit = {
+
+          dut.clockDomain.waitFallingEdge()
+
+          dut.io.bus.cmd.valid   #= true
+          dut.io.bus.cmd.wr      #= false
+          dut.io.bus.cmd.address #= address
+          dut.io.bus.cmd.data    #= 0
+          dut.io.bus.cmd.mask    #= 0xF
+          dut.io.bus.cmd.size    #= 2
+
+          // Command acceptance
+          dut.clockDomain.waitSampling()
+
+          assert(
+            dut.io.bus.cmd.ready.toBoolean,
+            "Load command was not accepted"
+          )
+
+          // Response observation
+          dut.clockDomain.waitFallingEdge()
+          dut.io.bus.cmd.valid #= false
+
+          assert(
+            dut.io.bus.rsp.ready.toBoolean,
+            "Load response is missing"
+          )
+
+          val actualData = dut.io.bus.rsp.data.toBigInt
+          val actualError = dut.io.bus.rsp.error.toBoolean
+
+          println(
+            f"LOAD addr=0x$address%08X " +
+            f"data=0x$actualData%08X " +
+            s"error=$actualError"
+          )
+
+          assert(
+            actualData == expectedData,
+            f"Expected data 0x$expectedData%08X, " +
+            f"got 0x$actualData%08X"
+          )
+
+          assert(
+            actualError == expectedError,
+            s"Expected error=$expectedError, got error=$actualError"
+          )
+
+          // Response must disappear after one cycle
+          dut.clockDomain.waitSampling()
+
+          assert(
+            !dut.io.bus.rsp.ready.toBoolean,
+            "Load response lasted longer than one cycle"
+          )
+        }
+
+        // ----------------------------------------------------
+        // Test 1: Initial state
+        // ----------------------------------------------------
+
+        println("\n[Test 1] Initial state")
+
+        assert(dut.io.gpioOut.toBigInt == 0)
+        assert(dut.io.gpioOe.toBigInt == 0)
+
+        read(
+          BigInt("10000000", 16),
+          BigInt(0)
+        )
+
+        read(
+          BigInt("10000008", 16),
+          BigInt(0)
+        )
+
+        println("[PASS] Initial state")
+
+        // ----------------------------------------------------
+        // Test 2: GPIO_OUT write / read
+        // ----------------------------------------------------
+
+        println("\n[Test 2] GPIO_OUT write / read")
+
+        write(
+          BigInt("10000000", 16),
+          BigInt("12345678", 16)
+        )
+
+        assert(
+          dut.io.gpioOut.toBigInt == BigInt("12345678", 16)
+        )
+
+        read(
+          BigInt("10000000", 16),
+          BigInt("12345678", 16)
+        )
+
+        println("[PASS] GPIO_OUT write / read")
+
+        // ----------------------------------------------------
+        // Test 3: GPIO_OE write / read
+        // ----------------------------------------------------
+
+        println("\n[Test 3] GPIO_OE write / read")
+
+        write(
+          BigInt("10000008", 16),
+          BigInt("0000000F", 16)
+        )
+
+        assert(
+          dut.io.gpioOe.toBigInt == BigInt("0000000F", 16)
+        )
+
+        read(
+          BigInt("10000008", 16),
+          BigInt("0000000F", 16)
+        )
+
+        println("[PASS] GPIO_OE write / read")
+
+        // ----------------------------------------------------
+        // Test 4: GPIO_OUT byte mask
+        // ----------------------------------------------------
+
+        println("\n[Test 4] GPIO_OUT byte mask")
+
+        write(
+          BigInt("10000000", 16),
+          BigInt("AABBCCDD", 16),
+          mask = 0x5
+        )
+
+        // Byte 0 and Byte 2 are updated.
+        // Byte 1 and Byte 3 remain unchanged.
+        val expectedOut = BigInt("12BB56DD", 16)
+
+        assert(
+          dut.io.gpioOut.toBigInt == expectedOut
+        )
+
+        read(
+          BigInt("10000000", 16),
+          expectedOut
+        )
+
+        println("[PASS] GPIO_OUT byte mask")
+
+        // ----------------------------------------------------
+        // Test 5: GPIO_OE byte mask
+        // ----------------------------------------------------
+
+        println("\n[Test 5] GPIO_OE byte mask")
+
+        write(
+          BigInt("10000008", 16),
+          BigInt("AABBCCDD", 16),
+          mask = 0xA
+        )
+
+        // Byte 1 and Byte 3 are updated.
+        val expectedOe = BigInt("AA00CC0F", 16)
+
+        assert(
+          dut.io.gpioOe.toBigInt == expectedOe
+        )
+
+        read(
+          BigInt("10000008", 16),
+          expectedOe
+        )
+
+        println("[PASS] GPIO_OE byte mask")
+
+        // ----------------------------------------------------
+        // Test 6: GPIO_IN synchronization
+        // ----------------------------------------------------
+
+        println("\n[Test 6] GPIO_IN synchronization")
+
+        val externalInput = BigInt("A5C369F0", 16)
+
+        dut.clockDomain.waitFallingEdge()
+        dut.io.gpioIn #= externalInput
+
+        // Allow two synchronization clock edges.
+        dut.clockDomain.waitSampling(2)
+
+        read(
+          BigInt("10000004", 16),
+          externalInput
+        )
+
+        println("[PASS] GPIO_IN synchronization")
+
+        // ----------------------------------------------------
+        // Test 7: GPIO_IN write is ignored
+        // ----------------------------------------------------
+
+        println("\n[Test 7] GPIO_IN write is ignored")
+
+        write(
+          BigInt("10000004", 16),
+          BigInt("FFFFFFFF", 16)
+        )
+
+        read(
+          BigInt("10000004", 16),
+          externalInput
+        )
+
+        println("[PASS] GPIO_IN write ignored")
+
+        // ----------------------------------------------------
+        // Test 8: Reserved address Load Error
+        // ----------------------------------------------------
+
+        println("\n[Test 8] Reserved address Load Error")
+
+        read(
+          BigInt("1000000C", 16),
+          BigInt(0),
+          expectedError = true
+        )
+
+        println("[PASS] Reserved address Load Error")
+
+        // ----------------------------------------------------
+        // Test 9: Reserved Store is ignored
+        // ----------------------------------------------------
+
+        println("\n[Test 9] Reserved Store")
+
+        write(
+          BigInt("1000000C", 16),
+          BigInt("FFFFFFFF", 16)
+        )
+
+        assert(
+          dut.io.gpioOut.toBigInt == expectedOut
+        )
+
+        assert(
+          dut.io.gpioOe.toBigInt == expectedOe
+        )
+
+        println("[PASS] Reserved Store ignored")
+
+        // ----------------------------------------------------
+        // Finish
+        // ----------------------------------------------------
+
+        println("\n===================================")
+        println(" GPIO PERIPHERAL SIMULATION PASS")
+        println("===================================")
+
+        simSuccess()
+      }
+  }
+}
+```
+
+## 3. 테스트 결과를 어떻게 판단할까?
+
+실행 후 특히 다음 결과를 확인해 주세요.
+
+| 테스트           | 확인해야 할 핵심            |
+| ------------- | -------------------- |
+| GPIO_OUT      | `0x12345678` 저장 및 읽기 |
+| GPIO_OE       | `0x0000000F` 저장 및 읽기 |
+| OUT byte mask | `0x12BB56DD`         |
+| OE byte mask  | `0xAA00CC0F`         |
+| GPIO_IN       | `0xA5C369F0`         |
+| Reserved Load | `error=true`         |
+| Load response | 한 사이클만 valid         |
+
+참고로 OUT byte mask 결과가 `0x12BB56DD`인 이유는 초기 값이 `0x12345678`이고, mask `0x5`가 Byte 0과 Byte 2만 변경하기 때문입니다.
+
+한 가지 범위도 분명히 하겠습니다. 이 테스트는 GPIO 레지스터와 DBus 응답을 검증합니다. 실제 FPGA 핀의 전기적 동작, 출력 드라이버의 High-Z 상태, 외부 버튼의 바운스 제거(debounce)까지 검증하는 것은 아닙니다.
+
+우선 실행 결과를 보여주세요. 통과하면 다음으로 기존 `DBusDecoder`에 GPIO를 통합하고, 실제 VexRiscv CPU의 `LW`와 `SW` 명령으로 GPIO를 제어하는 테스트를 진행하겠습니다.
+
+---
