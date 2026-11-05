@@ -560,8 +560,7 @@ mtval	0x20000000	PASS
 mepc = 0x8000000C
 ```
 
-이 주소를 그대로 두고 MRET을 실행하면 같은 Load 명령어가 다시 실행되어 Trap이 반복됩니다. 따라서 Handler에서 mepc += 4를 수행해야 합니다.
-
+이 주소를 그대로 두고 MRET을 실행하면 같은 Load 명령어가 다시 실행되어 Trap이 반복됩니다. 따라서 Trap Handler에서 mepc += 4를 수행해야 합니다.
 사용 중인 VexRiscv commit의 CsrPlugin 소스를 확인했습니다. 이 버전은 MRET을 XRET 명령어로 디코딩하고, mepc를 복귀 PC로 사용하며 mstatus.MPIE/MIE와 MPP도 갱신합니다. 
 
 ## 1. CpuConfig.scala 수정
@@ -579,7 +578,7 @@ val csrConfig =
 mepc를 읽는 것뿐 아니라 Handler에서 수정해야 하기 때문입니다.
 
 기존 Plugin 목록에서는 그대로 다음과 같이 사용합니다.
-```
+```scala
 new CsrPlugin(csrConfig),
 ```
 
@@ -1005,3 +1004,52 @@ object VexRiscvTopSim extends App {
 실행 결과를 보내주세요. PASS가 확인되면 다음에는 Trap Handler에서 예외 원인을 분기 처리하고, 정상 복귀와 예외 종료를 구분하는 구조로 발전시키겠습니다.
 
 ---
+
+---
+
+MRET 검증 성공
+
+좋습니다. 이번 결과로 Trap 발생 → Handler 실행 → `mepc` 수정 → MRET → 원래 프로그램 복귀까지 실제 VexRiscv 시뮬레이션으로 확인했습니다.
+
+## 실행 흐름 확인
+
+| Cycle | 동작                             | 검증 결과 |
+| ----- | ------------------------------ | ----- |
+| 9     | RAM[0]에 `1` 저장                 | 정상    |
+| 15–16 | `0x20000000` Load Access Fault | 정상    |
+| 29–33 | Trap Handler가 CSR 값 저장         | 정상    |
+| 51    | RAM[2]에 `0x66` 저장              | 복귀 성공 |
+
+특히 핵심 결과는 다음과 같습니다.
+
+- `mcause = 5`: Load Access Fault
+- `mepc = 0x8000000C`: 오류가 발생한 Load 명령 주소
+- `mtval = 0x20000000`: 접근 오류가 발생한 주소
+- Handler가 `mepc`를 `0x80000010`으로 변경
+- MRET 실행 후 `0x80000010`부터 재개
+- 재개된 프로그램이 `RAM[2] = 0x66` 기록
+
+## 지금까지 완성한 기능
+
+현재 SoC는 단순히 CPU와 RAM을 연결한 수준을 넘어 다음 기능을 갖추었습니다.
+
+1. VexRiscv CPU와 Instruction ROM
+2. DBus를 통한 RAM Load/Store
+3. 주소 디코딩 및 Unmapped Load Error Response
+4. Load Access Fault 발생
+5. Trap Handler 진입
+6. `mcause`, `mepc`, `mtval` CSR 읽기
+7. `mepc` 수정 및 MRET을 통한 복귀
+
+여기서 중요한 것은 MRET 명령이 실제로 실행되었고, 복귀한 프로그램의 후속 Store까지 관찰했다는 점입니다.
+
+## 다음 단계: Trap Handler 개선
+
+다음에는 현재 고정된 Trap Handler를 조금 더 발전시키겠습니다.
+
+- `mcause`를 확인해서 예외 종류 판별
+- 처리 가능한 예외만 복구
+- 처리할 수 없는 예외는 별도 종료 경로로 이동
+- 잘못된 예외에서 무한 Trap 반복이 발생하지 않도록 구성
+
+먼저 `mcause` 비교와 조건 분기를 이용한 간단한 Trap Handler를 구현하겠습니다. 기존 RAM, ROM, DBus 구조는 그대로 유지하고 Handler 부분만 확장하겠습니다.
